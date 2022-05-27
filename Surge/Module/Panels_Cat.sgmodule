@@ -1,34 +1,36 @@
 #!name=Panels-Cat
-#!desc=MrCatLord自用的面板 感谢各位大佬的脚本
+#!desc=Mr.Cat自用的面板 感谢各位大佬的脚本
 #!system=ios
 [Panel]
 # macOS不生效
 # > EDC_Surge-Panel
 #Surge Pro标题,可显示启动时间,点击刷新为重载配置
 SurgePro_ReloadProfile = script-name=SurgePro_ReloadProfile,update-interval=1
-# 节假日
-节假日提醒 = script-name=节假日提醒,update-interval=3600
-# 流媒体解锁检测
-Stream_all = script-name=Stream_all, title="流媒体解锁检测", content="请刷新", update-interval=-1
-# 网络信息
-ipcheck = script-name=ipcheck, title="节点详情", content="请刷新", style=info, update-interval=1
+# 配置重载
+Profile Reload = title=Profile Reload,content=Profile Reload,style=info,script-name=Profile Reload,update-interval=-1
 # flush DNS
 flushDNS = script-name=flushDNS,title=Flush DNS,content=请刷新,update-interval=900
-# 配置重载
-配置重载 = title=配置重载,content=配置重载,style=info,script-name=配置重载,update-interval=-1
-
-
+# 节假日
+节假日提醒 = script-name=节假日提醒,update-interval=3600
+# 网络信息
+IP Check = script-name=IP Check, title="IP Check", content="请刷新", style=info, update-interval=1
+# 流媒体解锁检测
+Stream_all = script-name=Stream_all, title="流媒体解锁检测", content="请刷新", update-interval=-1
+#!显示卡片开关，用于隐藏卡片时查看开启状态
+#functionstatus = script-name=functionstatus, title="Surge", content="请刷新", update-interval=60
 
 [Script]
 #附带重载配置,Surge Pro标题,可显示启动时间,点击刷新为重载配置
 SurgePro_ReloadProfile = type=generic,timeout=10,script-path= https://raw.githubusercontent.com/fishingworld/something/main/PanelScripts/surgepro_reloadprofile.js ,argument=icon=crown.fill&color=#f6c970
 # dns
-flushDNS = type=generic,timeout=5,script-path=https://raw.githubusercontent.com/zZPiglet/Task/master/asset/flushDNS.js,argument=title=DNS Flush&icon=arrow.clockwise&color=#0000
+flushDNS = type=generic,timeout=5,script-path=https://raw.githubusercontent.com/zZPiglet/Task/master/asset/flushDNS.js,argument=title=DNS Flush&icon=repeat.circle&color=#C71585
 # 节点检测
-ipcheck = type=generic,timeout=3,script-path=https://raw.githubusercontent.com/LucaLin233/Luca_Conf/main/Surge/JS/ipcheck.js,script-update-interval=0
+IP Check = type=generic,timeout=3,script-path=https://raw.githubusercontent.com/MrCatLord/Beware-of-Thorn-Princess/main/Surge/JS/IPCheck.js,script-update-interval=0
 # 配置重载
-配置重载 = script-path=https://raw.githubusercontent.com/LucaLin233/Luca_Conf/main/Surge/JS/Reload.js,type=generic
+Profile Reload = script-path=https://raw.githubusercontent.com/MrCatLord/Beware-of-Thorn-Princess/main/Surge/JS/Profile_Reload.js,type=generic
 # 流媒体检测
 Stream_all = type=generic, timeout=15, script-path=https://raw.githubusercontent.com/MrCatLord/Beware-of-Thorn-Princess/main/Surge/JS/Stream_all.js
 # 节假日
-节假日提醒 = type=generic,timeout=10,script-path=https://raw.githubusercontent.com/smartmimi/conf/master/surge/timecard.js
+节假日提醒 = type=generic,timeout=10,script-path=https://raw.githubusercontent.com/MrCatLord/Beware-of-Thorn-Princess/main/Surge/JS/TimeCard.js
+#显示卡片开关，用于隐藏卡片时查看开启状态
+#functionstatus = type=generic, script-path=https://raw.githubusercontent.com/smartmimi/conf/master/surge/functionstatus.js
