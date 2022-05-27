@@ -12,7 +12,7 @@ $httpAPI("POST", "/v1/profiles/reload", {}, data => {
     $done({
         title:"Profile Reload",
         content:"Last runtime:  "+monthArray[month]+" "+date+"  "+hour+":"+minutes+":"+seconds,
-        icon:"circle.dashed.inset.filled",
+        icon:"pencil.and.outline",
         "icon-color": "#FF9500",
      })
     }); 
