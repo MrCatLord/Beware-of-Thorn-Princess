@@ -10,7 +10,7 @@ $httpAPI("POST", "/v1/profiles/reload", {}, data => {
    minutes = minutes > 9 ? minutes : "0" + minutes;
    seconds = seconds > 9 ? seconds : "0" + seconds;
     $done({
-        title:"Profile Reload",
+        title:"𝑷𝒓𝒐𝒇𝒊𝒍𝒆 𝑹𝒆𝒍𝒐𝒂𝒅",
         content:"Last runtime:  "+monthArray[month]+" "+date+"  "+hour+":"+minutes+":"+seconds,
         icon:"pencil.and.outline",
         "icon-color": "#FF9500",
