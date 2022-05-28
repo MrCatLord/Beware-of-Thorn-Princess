@@ -9,7 +9,6 @@
   let expire = args.expire || info.expire;
   let content = [`Used: ${bytesToSize(used)}｜Reset: ${resetDayLeft} Days`];
 
-/*
   if (resetDayLeft) {
     content.push(`重置：剩余${resetDayLeft}天`);
   }
@@ -18,7 +17,7 @@
     if (/^[\d.]+$/.test(expire)) expire *= 1000;
     content.push(`到期：${formatTime(expire)}`);
   }
-*/
+  
   let now = new Date();
   let hour = now.getHours();
   let minutes = now.getMinutes();
