@@ -18,7 +18,8 @@ URL-REGEX,https://app.bilibili.com/x/v2/(splash|search/(defaultword|square)),REJ
 ^https?:\/\/api\.bilibili\.com\/pgc\/season\/app\/related\/recommend\? - reject
 # > Bilibili SEA 解除 SIM 卡地区限制（by HotKids）
 (^https?:\/\/app\.biliintl\.com\/intl\/.+)(&sim_code=\d+)(.+) $1$3 302
-
+#～ BiliBili_嗶哩嗶哩_應用開屏去廣告@bm7
+^https://app.bilibili.com/x/v2/splash/show - reject
 [Script]
 # BiliBili_嗶哩嗶哩_1080P高码率+4K畫質(番劇和影視除外)@ddgksf2013
 嗶哩嗶哩_1080P高码率+4K畫質(番劇和影視除外) = type=http-response,pattern=^https?:\/\/app\.bilibili\.com\/x\/v2\/account\/myinfo\?,requires-body=1,max-size=0,script-path=https://raw.githubusercontent.com/xwxiewu/Surge/master/Script/bilibili/bilibili_diy.js,script-update-interval=-1
@@ -31,21 +32,21 @@ bilibili搜索指定地区的番剧 = type=http-request,pattern=^https:\/\/ap(p|
 嗶哩嗶哩_繁體CC字幕轉中文簡體 = type=http-response,pattern=^https?:\/\/i.\.hdslb\.com\/bfs\/subtitle\/.+\.json$,requires-body=1,max-size=0,script-path=https://raw.githubusercontent.com/xwxiewu/Surge/master/Script/bilibili/bilibili_cc.js,script-update-interval=-1
 
 # blackmatrix7大佬
-BiliBili_推荐去广告 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/app\.bilibili\.com\/x\/v2\/feed\/index,script-path=https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/script/bilibili/bilibili_plus.js
-BiliBili_追番去广告 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/api\.bilibili\.com\/pgc\/page\/bangumi,script-path=https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/script/bilibili/bilibili_plus.js
-BiliBili_直播去广告 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/api\.live\.bilibili\.com\/xlive\/app-room\/v1\/index\/getInfoByRoom,script-path=https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/script/bilibili/bilibili_plus.js
-BiliBili_动态去广告 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/api\.vc\.bilibili\.com\/dynamic_svr\/v1\/dynamic_svr\/dynamic_(history|new)\?,script-path=https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/script/bilibili/bilibili_plus.js
-BiliBili_开屏去广告 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/app\.bilibili\.com\/x\/v2\/splash\/list,script-path=https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/script/bilibili/bilibili_plus.js
+#BiliBili_推荐去广告 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/app\.bilibili\.com\/x\/v2\/feed\/index,script-path=https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/script/bilibili/bilibili_plus.js
+#BiliBili_追番去广告 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/api\.bilibili\.com\/pgc\/page\/bangumi,script-path=https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/script/bilibili/bilibili_plus.js
+#BiliBili_直播去广告 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/api\.live\.bilibili\.com\/xlive\/app-room\/v1\/index\/getInfoByRoom,script-path=https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/script/bilibili/bilibili_plus.js
+#BiliBili_动态去广告 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/api\.vc\.bilibili\.com\/dynamic_svr\/v1\/dynamic_svr\/dynamic_(history|new)\?,script-path=https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/script/bilibili/bilibili_plus.js
+#BiliBili_开屏去广告 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/app\.bilibili\.com\/x\/v2\/splash\/list,script-path=https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/script/bilibili/bilibili_plus.js
 #BiliBili_标签页处理 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/app\.bilibili\.com\/x\/resource\/show\/tab,script-path=https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/script/bilibili/bilibili_plus.js
 #BiliBili_我的页面处理 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/app\.bilibili\.com\/x\/v2\/account\/mine,script-path=https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/script/bilibili/bilibili_plus.js
 
 # ddgksf2013和张军大佬
 # MrCatLord转换后的
-#BiliBili_推荐去广告 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/app\.bilibili\.com\/x\/v2\/feed\/index\?,script-path=https://raw.githubusercontent.com/ddgksf2013/Cuttlefish/master/Script/bilibili_diy.js
-#BiliBili_追番去广告 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/api\.bilibili\.com\/pgc\/page\/bangumi,script-path=https://raw.githubusercontent.com/ddgksf2013/Cuttlefish/master/Script/bilibili_diy.js
-#BiliBili_动态去广告 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/api\.vc\.bilibili\.com\/dynamic_svr\/v1\/dynamic_svr\/dynamic_(history|new)\?,script-path=https://raw.githubusercontent.com/ddgksf2013/Cuttlefish/master/Script/bilibili_diy.js
-#BiliBili_开屏去广告 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/app\.bilibili\.com\/x\/v2\/splash\/list\?,script-path=https://raw.githubusercontent.com/ddgksf2013/Cuttlefish/master/Script/bilibili_diy.js
-#BiliBili_直播去广告 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/api\.live\.bilibili\.com\/xlive\/app-room\/v1\/index\/getInfoByRoom,script-path=https://raw.githubusercontent.com/ddgksf2013/Cuttlefish/master/Script/bilibili_diy.js
+BiliBili_进入先直连 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/api\.bilibili\.com\/x\/offline\/version,script-path=https://raw.githubusercontent.com/ddgksf2013/Cuttlefish/master/Script/bilibili_startup_direct.js
+BiliBili_推荐去广告 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/app\.bilibili\.com\/x\/v2\/feed\/index\?,script-path=https://raw.githubusercontent.com/ddgksf2013/Cuttlefish/master/Script/bilibili_diy.js#BiliBili_追番去广告 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/api\.bilibili\.com\/pgc\/page\/bangumi,script-path=https://raw.githubusercontent.com/ddgksf2013/Cuttlefish/master/Script/bilibili_diy.js
+BiliBili_动态去广告 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/api\.vc\.bilibili\.com\/dynamic_svr\/v1\/dynamic_svr\/dynamic_(history|new)\?,script-path=https://raw.githubusercontent.com/ddgksf2013/Cuttlefish/master/Script/bilibili_diy.js
+BiliBili_开屏去广告 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/app\.bilibili\.com\/x\/v2\/splash\/list\?,script-path=https://raw.githubusercontent.com/ddgksf2013/Cuttlefish/master/Script/bilibili_diy.js
+BiliBili_直播去广告 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/api\.live\.bilibili\.com\/xlive\/app-room\/v1\/index\/getInfoByRoom,script-path=https://raw.githubusercontent.com/ddgksf2013/Cuttlefish/master/Script/bilibili_diy.js
 BiliBili_我的页面处理 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/app\.bilibili\.com\/x\/v2\/account\/mine,script-path=https://raw.githubusercontent.com/ddgksf2013/Cuttlefish/master/Script/bilibili_diy.js
 BiliBili_标签页处理 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/app\.bilibili\.com\/x\/resource\/show\/tab,script-path=https://raw.githubusercontent.com/ddgksf2013/Cuttlefish/master/Script/bilibili_diy.js
 BiliBili_去统一皮肤 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/app\.bilibili\.com\/x\/resource\/show\/skin\?,script-path=https://raw.githubusercontent.com/ddgksf2013/Cuttlefish/master/Script/bilibili_diy.js
