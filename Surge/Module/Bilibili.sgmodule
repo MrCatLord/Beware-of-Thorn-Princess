@@ -42,7 +42,7 @@ bilibili搜索指定地区的番剧 = type=http-request,pattern=^https:\/\/ap(p|
 
 # ddgksf2013和张军大佬
 # MrCatLord转换后的
-BiliBili_哔哩哔哩_启动时开启直连模式 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/api\.bilibili\.com\/x\/offline\/version,script-path=https://raw.githubusercontent.com/ddgksf2013/Cuttlefish/master/Script/bilibili_startup_direct.js
+BiliBili_哔哩哔哩_启动时开启直连模式 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/api\.bilibili\.com\/x\/offline\/version,script-path=https://raw.githubusercontent.com/MrCatLord/Beware-of-Thorn-Princess/main/Surge/JS/bilibili_startup_direct.js
 BiliBili_哔哩哔哩_推荐去广告 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/app\.bilibili\.com\/x\/v2\/feed\/index\?,script-path=https://raw.githubusercontent.com/ddgksf2013/Cuttlefish/master/Script/bilibili_diy.js
 BiliBili_追番去广告 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/api\.bilibili\.com\/pgc\/page\/bangumi,script-path=https://raw.githubusercontent.com/ddgksf2013/Cuttlefish/master/Script/bilibili_diy.js
 BiliBili_哔哩哔哩_动态去广告 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/api\.vc\.bilibili\.com\/dynamic_svr\/v1\/dynamic_svr\/dynamic_(history|new)\?,script-path=https://raw.githubusercontent.com/ddgksf2013/Cuttlefish/master/Script/bilibili_diy.js
