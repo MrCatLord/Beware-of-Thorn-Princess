@@ -54,4 +54,4 @@ BiliBili_哔哩哔哩_标籤页处理 = type=http-response,requires-body=1,max-s
 BiliBili_哔哩哔哩_去除统一设置的皮肤 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\/\/app\.bilibili\.com\/x\/resource\/show\/skin\?,script-path=https://raw.githubusercontent.com/ddgksf2013/Cuttlefish/master/Script/bilibili_diy.js
 BiliBili_哔哩哔哩_观影页面去广告 = type=http-response,requires-body=1,max-size=0,pattern=https?:\/\/api\.bilibili\.com\/pgc\/page\/cinema\/tab\?,script-path=https://raw.githubusercontent.com/ddgksf2013/Cuttlefish/master/Script/bilibili_diy.js
 [MITM]
-hostname = %APPEND% api.bilibili.com,app.bilibili.com,api.live.bilibili.com,api.vc.bilibili.com,manga.bilibili.com,ap?.bilibili.com,app.biliintl.com,ap?.biliapi.net,i0.hdslb.com, app.biliintl.com,  grpc.biliapi.net
+hostname = %APPEND% api.bilibili.com,app.bilibili.com,api.live.bilibili.com,api.vc.bilibili.com,manga.bilibili.com,ap?.bilibili.com,app.biliintl.com,ap?.biliapi.net,i0.hdslb.com,grpc.biliapi.net
