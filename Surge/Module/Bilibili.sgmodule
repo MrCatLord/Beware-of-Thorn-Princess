@@ -20,6 +20,18 @@ URL-REGEX,https://app.bilibili.com/x/v2/(splash|search/(defaultword|square)),REJ
 (^https?:\/\/app\.biliintl\.com\/intl\/.+)(&sim_code=\d+)(.+) $1$3 302
 #～ BiliBili_嗶哩嗶哩_應用開屏去廣告@bm7
 ^https://app.bilibili.com/x/v2/splash/show - reject
+# ～ BiliBili_嗶哩嗶哩_小卡片廣告@ddgksf2013
+^https://api.bilibili.com/pgc/season/player/cards - reject
+# ～ BiliBili_嗶哩嗶哩_Defaultword@ddgksf2013
+^https://app.bilibili.com/x/v2/search/defaultwords - reject
+# ～ BiliBili_嗶哩嗶哩_Material_Ad@ddgksf2013
+^https?:\/\/api\.bilibili\.com\/x\/vip\/ads\/material\/report - reject
+# ～ BiliBili_嗶哩嗶哩_去除搜索中的大家都在搜@bm7
+^https?:\/\/api\.vc\.bilibili\.com\/search_svr\/v\d\/Search\/recommend_words - reject
+# ～ BiliBili_嗶哩嗶哩_去除動態中的話題@bm7
+^https?:\/\/api\.vc\.bilibili\.com\/topic_svr\/v1\/topic_svr - reject
+
+^https?:\/\/api\.bilibili\.com\/x\/offline\/version - direct
 [Script]
 # BiliBili_嗶哩嗶哩_1080P高码率+4K畫質(番劇和影視除外)@ddgksf2013
 嗶哩嗶哩_1080P高码率+4K畫質(番劇和影視除外) = type=http-response,pattern=^https?:\/\/app\.bilibili\.com\/x\/v2\/account\/myinfo\?,requires-body=1,max-size=0,script-path=https://raw.githubusercontent.com/xwxiewu/Surge/master/Script/bilibili/bilibili_diy.js,script-update-interval=-1
@@ -53,22 +65,6 @@ bilibili搜索指定地区的番剧 = type=http-request,pattern=^https:\/\/ap(p|
 嗶哩嗶哩_去除統一設置的皮膚 = type=http-response,pattern=^https?:\/\/app\.bilibili\.com\/x\/resource\/show\/skin\?,requires-body=1,max-size=0,script-path=https://raw.githubusercontent.com/xwxiewu/Surge/master/Script/bilibili/bilibili_diy.js,script-update-interval=-1
 # ～ BiliBili_嗶哩嗶哩_热搜发现@ddgksf2013
 嗶哩嗶哩_热搜发现 = type=http-response,pattern=^https://app.bilibili.com/x/v2/search/square,requires-body=1,max-size=0,script-path=https://raw.githubusercontent.com/xwxiewu/Surge/master/Script/bilibili/bilibili_diy.js,script-update-interval=-1
-# ～ BiliBili_嗶哩嗶哩_Defaultword@ddgksf2013
-^https://app.bilibili.com/x/v2/search/defaultwords - reject
-# ～ BiliBili_嗶哩嗶哩_Material_Ad@ddgksf2013
-^https?:\/\/api\.bilibili\.com\/x\/vip\/ads\/material\/report - reject
-# ～ BiliBili_嗶哩嗶哩_小卡片廣告@ddgksf2013
-^https://api.bilibili.com/pgc/season/player/cards - reject
-# ～ BiliBili_嗶哩嗶哩_解除SIM卡地區限制
-(^https?:\/\/app\.biliintl.com\/intl\/.+)(&sim_code=\d+)(.+) $1$3 302
-# ～ BiliBili_嗶哩嗶哩_去除搜索中的大家都在搜@bm7
-^https?:\/\/api\.vc\.bilibili\.com\/search_svr\/v\d\/Search\/recommend_words - reject
-# ～ BiliBili_嗶哩嗶哩_去除動態中的話題@bm7
-^https?:\/\/api\.vc\.bilibili\.com\/topic_svr\/v1\/topic_svr - reject
-# ～ BiliBili_嗶哩嗶哩_可能的一些推廣(beta)@bm7
-^https?:\/\/api\.bilibili\.com\/pgc\/season\/app\/related\/recommend\? - reject
-# ～ BiliBili_嗶哩嗶哩_漫畫去廣告@ddgksf2013
-^https?:\/\/manga\.bilibili\.com\/twirp\/comic\.v\d\.Comic\/(Flash|ListFlash) - reject
 # ～ BiliBili_嗶哩嗶哩_推薦去廣告@ddgksf2013
 嗶哩嗶哩_推薦去廣告 = type=http-response,pattern=^https?:\/\/app\.bilibili\.com\/x\/v2\/feed\/index,max-size=0,script-path=https://raw.githubusercontent.com/xwxiewu/Surge/master/Script/bilibili/bilibili_diy.js,script-update-interval=-1
 # ～ BiliBili_嗶哩嗶哩_追番去廣告@ddgksf2013
