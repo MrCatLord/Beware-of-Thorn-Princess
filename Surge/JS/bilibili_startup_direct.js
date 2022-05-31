@@ -2,7 +2,7 @@ const Group = $prefs.valueForKey('BiliArea_Policy') || 'Bilibili';
 
 const message = {
     action: "set_policy_state",
-    content: {[Group]: "Direct"}
+    content: {[Group]: "direct"}
 };
 $configuration.sendMessage(message).then(resolve => {
     if (resolve.error) {
