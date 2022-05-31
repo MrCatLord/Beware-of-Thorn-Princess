@@ -6,7 +6,7 @@
 DOMAIN-SUFFIX,cm.bilibili.com,REJECT
 URL-REGEX,^https?:\/\/api\.bilibili\.com\/x\/v2\/dm\/ad,REJECT
 URL-REGEX,https://app.bilibili.com/x/v2/(splash|search/(defaultword|square)),REJECT
-
+URL-REGEX,^https?:\/\/api\.bilibili\.com\/x\/offline\/version,Direct
 [URL Rewrite]
 # BiliBili漫画去广告
 ^https?:\/\/manga\.bilibili\.com\/twirp\/comic\.v\d\.Comic\/Flash - reject
@@ -31,7 +31,7 @@ URL-REGEX,https://app.bilibili.com/x/v2/(splash|search/(defaultword|square)),REJ
 # ～ BiliBili_嗶哩嗶哩_去除動態中的話題@bm7
 ^https?:\/\/api\.vc\.bilibili\.com\/topic_svr\/v1\/topic_svr - reject
 
-^https?:\/\/api\.bilibili\.com\/x\/offline\/version - direct
+
 [Script]
 # BiliBili_嗶哩嗶哩_1080P高码率+4K畫質(番劇和影視除外)@ddgksf2013
 嗶哩嗶哩_1080P高码率+4K畫質(番劇和影視除外) = type=http-response,pattern=^https?:\/\/app\.bilibili\.com\/x\/v2\/account\/myinfo\?,requires-body=1,max-size=0,script-path=https://raw.githubusercontent.com/xwxiewu/Surge/master/Script/bilibili/bilibili_diy.js,script-update-interval=-1
