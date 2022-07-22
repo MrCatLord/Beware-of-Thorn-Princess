@@ -1,4 +1,4 @@
-const REQUEST_HEADERS = {
+ const REQUEST_HEADERS = {
     'User-Agent':
       'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.61 Safari/537.36',
     'Accept-Language': 'en',
@@ -241,7 +241,7 @@ panel_result['content'] = content
               'Content-Type': 'application/json',
               'User-Agent': UA,
             },
-           body: JSON.stringify({
+            body: JSON.stringify({
               query: 'mutation registerDevice($input: RegisterDeviceInput!) { registerDevice(registerDevice: $input) { grant { grantType assertion } } }',
               variables: {
                 input: {
@@ -333,55 +333,4 @@ panel_result['content'] = content
             reject('Timeout')
           }, delay)
         })
-      }
-              token: { accessToken },
-              session: {
-                inSupportedLocation,
-                location: { countryCode },
-              },
-            } = data?.extensions?.sdk
-            resolve({ inSupportedLocation, countryCode, accessToken })
-          })
-        })
-      }
-      
-      function testHomePage() {
-        return new Promise((resolve, reject) => {
-          let opts = {
-            url: 'https://www.disneyplus.com/',
-            headers: {
-              'Accept-Language': 'en',
-              'User-Agent': UA,
-            },
-          }
-      
-          $httpClient.get(opts, function (error, response, data) {
-            if (error) {
-              reject('Error')
-              return
-            }
-            if (response.status !== 200 || data.indexOf('unavailable') !== -1) {
-              reject('Not Available')
-              return
-            }
-      
-            let match = data.match(/Region: ([A-Za-z]{2})[\s\S]*?CNBL: ([12])/)
-            if (!match) {
-              resolve({ region: '', cnbl: '' })
-              return
-            }
-      
-            let region = match[1]
-            let cnbl = match[2]
-            resolve({ region, cnbl })
-          })
-        })
-      }
-      
-      function timeout(delay = 5000) {
-        return new Promise((resolve, reject) => {
-          setTimeout(() => {
-            reject('Timeout')
-          }, delay)
-        })
-      }
+      } 
