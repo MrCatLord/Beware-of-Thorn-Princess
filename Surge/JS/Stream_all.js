@@ -47,17 +47,17 @@ const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (
  let disney_result=""
     if (status==STATUS_COMING) {
         //console.log(1)
-        disney_result="𝔇𝔦𝔰𝔫𝔢𝔜: 即将登陆~"+region.toUpperCase()
+        disney_result="𝔇𝔦𝔖𝔫𝔢𝔜: 即将登陆~"+region.toUpperCase()
       } else if (status==STATUS_AVAILABLE){
         //console.log(2)
         console.log(region)
-        disney_result="𝔇𝔦𝔰𝔫𝔢𝔜: 已经解锁 ➠ " +`${getFlagEmoji(region)} ` + region.toUpperCase()
+        disney_result="𝔇𝔦𝔖𝔫𝔢𝔜: 已经解锁 ➠ " +`${getFlagEmoji(region)} ` + region.toUpperCase()
         // console.log(result["Disney"])
       } else if (status==STATUS_NOT_AVAILABLE) {
         //console.log(3)
-        disney_result="𝔇𝔦𝔰𝔫𝔢𝔜: 没有支持 🚫 "
+        disney_result="𝔇𝔦𝔖𝔫𝔢𝔜: 没有支持 🚫 "
       } else if (status==STATUS_TIMEOUT) {
-        disney_result="𝔇𝔦𝔰𝔫𝔢𝔜: 检测超时 🚦"
+        disney_result="𝔇𝔦𝔖𝔫𝔢𝔜: 检测超时 🚦"
       }
 result.push(disney_result)
 console.log(result)
@@ -103,7 +103,7 @@ panel_result['content'] = content
       })
     }
   
-    let youtube_check_result = '𝔜𝔬𝔲𝔗𝔲€: '
+    let youtube_check_result = '𝔜𝔬𝔲𝔓𝔯𝔈: '
   
     await inner_check()
       .then((code) => {
@@ -159,7 +159,7 @@ panel_result['content'] = content
       })
     }
   
-    let netflix_check_result = '𝔑𝔢𝔱𝔣𝔩𝔦𝔛: '
+    let netflix_check_result = '𝔑𝔢𝔱𝔉𝔩𝔦𝔛: '
   
     await inner_check(81215567)
       .then((code) => {
