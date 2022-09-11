@@ -103,7 +103,7 @@ panel_result['content'] = content
       })
     }
   
-    let youtube_check_result = '𝔜𝔬𝔲𝔗𝔲𝔟𝔢: '
+    let youtube_check_result = '𝔜𝔬𝔲𝔗𝔲€: '
   
     await inner_check()
       .then((code) => {
