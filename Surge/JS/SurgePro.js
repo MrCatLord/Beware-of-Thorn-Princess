@@ -18,8 +18,8 @@ if ($trigger == "button") {
 $done({
     title:"𝑺𝒖𝒓𝒈𝒆 𝑷𝒓𝒐"+startTime,
     content:"Mitm:"+icon_status(mitm_status.enabled)+"  Rewrite:"+icon_status(rewrite_status.enabled)+"  Scripting:"+icon_status(scripting_status.enabled),
-    icon: params.icon,
-		"icon-color":params.color
+            icon: params.icon,
+		     "icon-color":params.color
 });
 })();
 function icon_status(status){
