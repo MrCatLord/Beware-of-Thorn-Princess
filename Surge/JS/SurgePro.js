@@ -12,6 +12,7 @@ if ($trigger == "button") await httpAPI("/v1/profiles/reload");
   $done({
       title:"𝑺𝒖𝒓𝒈𝒆 𝑷𝒓𝒐",
       content:`启动时长: ${startTime}`,
+content:"Mitm:"+icon_status(mitm_status.enabled)+"  Rewrite:"+icon_status(rewrite_status.enabled)+"  Scripting:"+icon_status(scripting_status.enabled),
 		icon: params.icon,
 		"icon-color":params.color
     });
