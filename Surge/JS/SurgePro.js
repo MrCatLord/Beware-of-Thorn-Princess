@@ -1,6 +1,10 @@
 let params = getParams($argument)
 
 !(async () => {
+let mitm_status = (await httpAPI("/v1/features/mitm","GET"));
+let rewrite_status = (await httpAPI("/v1/features/rewrite","GET"));
+let scripting_status = (await httpAPI("/v1/features/scripting","GET"));
+let icon_s = mitm_status.enabled&&rewrite_status.enabled&&scripting_status.enabled;
 /* 时间获取 */
 let traffic = (await httpAPI("/v1/traffic","GET"))
 let dateNow = new Date()
@@ -18,7 +22,13 @@ content:"Mitm:"+icon_status(mitm_status.enabled)+"  Rewrite:"+icon_status(rewrit
     });
 
 })();
-
+function icon_status(status){
+  if (status){
+    return "\u2611";
+  } else {
+      return "\u2612"
+    }
+}
 function timeTransform(dateNow,dateTime) {
 let dateDiff = dateNow - dateTime;
 let days = Math.floor(dateDiff / (24 * 3600 * 1000));//计算出相差天数
