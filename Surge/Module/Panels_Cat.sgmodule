@@ -40,3 +40,4 @@ IP Check = type=generic,timeout=3,script-path=https://raw.githubusercontent.com/
 //节假日提醒 = type=generic,timeout=10,script-path=https://raw.githubusercontent.com/MrCatLord/Beware-of-Thorn-Princess/main/Surge/JS/TimeCard.js
 # 网络延迟
 ConnectivityTest = type=generic, script-path=https://raw.githubusercontent.com/MrCatLord/Beware-of-Thorn-Princess/main/Surge/JS/ConnectivityTest.js, script-update-interval=0
+
