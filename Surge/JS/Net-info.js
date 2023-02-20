@@ -15,6 +15,7 @@ const v4IP = v4.primaryAddress;
             title: "未连接网络",
             content: "请检查网络连接",
             icon: "airplane"
+            "icon-color": "#FF9500"
         });
         return;
     }
