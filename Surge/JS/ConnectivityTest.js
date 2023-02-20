@@ -12,7 +12,7 @@ await Promise.all([http('Baidu'),http('Bilibili'),http('Github'),http('Google'),
     title: '𝑵𝒆𝒕𝒘𝒐𝒓𝒌 𝑪𝒐𝒏𝒏𝒆𝒄𝒕𝒊𝒗𝒊𝒕𝒚 𝑻𝒆𝒔𝒕',
     content: x.join('\n'),
     icon: 'timer',
-    'icon-color': '#7FFFD4',
+    'icon-color': '#66CDAA',
   })
 })
 })();
