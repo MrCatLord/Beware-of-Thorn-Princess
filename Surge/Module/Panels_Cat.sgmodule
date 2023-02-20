@@ -5,7 +5,7 @@
 # macOS不生效
 # > EDC_Surge-Panel
 #Surge Pro标题,可显示启动时间,点击刷新为重载配置
-surge = script-name=surge, title="Surge", content="请刷新", update-interval=60
+surge = script-name=surge, title="𝑺𝒖𝒓𝒈𝒆 𝑷𝒓𝒐", content="请刷新", update-interval=60
 # 配置重载
 //Profile Reload = title=Profile Reload,content=Profile Reload,style=info,script-name=Profile Reload,update-interval=-1
 # flush DNS
@@ -14,10 +14,12 @@ flushDNS = script-name=flushDNS,title=Flush DNS,content=请刷新,update-interva
 #节假日提醒 = script-name=节假日提醒,update-interval=3600
 # 网络信息
 IP Check = script-name=IP Check, title="𝑰𝑷 𝑪𝒉𝒆𝒄𝒌", content="请刷新", style=info, update-interval=1
+# 网络信息面板
+//net-info-panel = script-name=net-info-panel, title="网络状态", content="请刷新", style=info, update-interval=1
 # 流媒体解锁检测
 //Stream_all = script-name=Stream_all, title="流媒体解锁检测", content="请刷新", update-interval=-1
-# 显示卡片开关，用于隐藏卡片时查看开启状态
-#functionstatus = script-name=functionstatus, title="Surge", content="请刷新", update-interval=60
+# 网络延迟
+ConnectivityTest = script-name=ConnectivityTest, title="𝑵𝒆𝒕𝒘𝒐𝒓𝒌 𝑪𝒐𝒏𝒏𝒆𝒄𝒕𝒊𝒗𝒊𝒕𝒚 𝑻𝒆𝒔𝒕", content="请刷新", update-interval=1
 
 
 
@@ -28,11 +30,13 @@ surge= type=generic, script-path=https://raw.githubusercontent.com/MrCatLord/Bew
 flushDNS = type=generic,timeout=5,script-path=https://raw.githubusercontent.com/zZPiglet/Task/master/asset/flushDNS.js,argument=title=𝑫𝑵𝑺 𝑭𝒍𝒖𝒔𝒉&icon=repeat.circle&color=#C71585
 # 节点检测
 IP Check = type=generic,timeout=3,script-path=https://raw.githubusercontent.com/MrCatLord/Beware-of-Thorn-Princess/main/Surge/JS/IPCheck.js,script-update-interval=0
+# 网络信息面板
+//net-info-panel = type=generic, script-path=https://raw.githubusercontent.com/MrCatLord/Beware-of-Thorn-Princess/main/Surge/JS/Net-info.js, script-update-interval=0
 # 配置重载
 //Profile Reload = script-path=https://raw.githubusercontent.com/MrCatLord/Beware-of-Thorn-Princess/main/Surge/JS/Profile_Reload.js,type=generic
 # 流媒体检测
 //Stream_all = type=generic, timeout=15, script-path=https://raw.githubusercontent.com/MrCatLord/Beware-of-Thorn-Princess/main/Surge/JS/Stream_all.js
 # 节假日
 //节假日提醒 = type=generic,timeout=10,script-path=https://raw.githubusercontent.com/MrCatLord/Beware-of-Thorn-Princess/main/Surge/JS/TimeCard.js
-#显示卡片开关，用于隐藏卡片时查看开启状态
-#functionstatus = type=generic, script-path=https://raw.githubusercontent.com/smartmimi/conf/master/surge/functionstatus.js
+# 网络延迟
+ConnectivityTest = type=generic, script-path=https://raw.githubusercontent.com/MrCatLord/Beware-of-Thorn-Princess/main/Surge/JS/ConnectivityTest.js, script-update-interval=0
