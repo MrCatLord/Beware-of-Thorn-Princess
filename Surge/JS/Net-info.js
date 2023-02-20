@@ -14,8 +14,7 @@ const v4IP = v4.primaryAddress;
         $.done({
             title: "未连接网络",
             content: "请检查网络连接",
-            icon: "airplane",
-            "icon-color": "#FF9500"
+            icon: "airplane"
         });
         return;
     }
@@ -31,7 +30,6 @@ const v4IP = v4.primaryAddress;
             + (wifi.ssid ? `路由器地址：${router}\n` : "")
             + `外部 IP：${externalIP}`,
         icon: wifi.ssid ? "wifi" : "antenna.radiowaves.left.and.right"
-        "icon-color": "#FF9500"
     };
     $.done(body);
 })();
