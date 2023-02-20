@@ -9,7 +9,7 @@ Github:'https://www.github.com'
 !(async () => {
 await Promise.all([http('Baidu'),http('Bilibili'),http('Github'),http('Google'),http('Youtube')]).then((x)=>{
 	$done({
-    title: 'Network Connectivity Test',
+    title: '𝑵𝒆𝒕𝒘𝒐𝒓𝒌 𝑪𝒐𝒏𝒏𝒆𝒄𝒕𝒊𝒗𝒊𝒕𝒚 𝑻𝒆𝒔𝒕',
     content: x.join('\n'),
     icon: 'timer',
     'icon-color': '#FF5A9AF9',
