@@ -1,6 +1,10 @@
 #!name=B站净化-Mr.Cat
 #!desc=B站的若干自用脚本
+#！感谢各位脚本原作者
 [Script]
+# ～ BiliBili_哔哩哔哩_应用开屏广告预加载@yjqiang
+bilibili_json = type=http-response,pattern=^https:\/\/app\.bilibili\.com\/x\/v2\/splash\/list,requires-body=1,max-size=0,script-path=https://github.com/ddgksf2013/Scripts/raw/master/bilibili_json.js,script-update-interval=0
+
 # ～ 港台B站cc字幕繁体转简体
 bilibili_cc = type=http-response,pattern=^https?:\/\/i.\.hdslb\.com\/bfs\/subtitle\/.+\.json$,requires-body=1,max-size=0,script-path=https://github.com/ddgksf2013/Scripts/raw/master/bilibili_cc.js,script-update-interval=0
 
@@ -8,6 +12,9 @@ bilibili_cc = type=http-response,pattern=^https?:\/\/i.\.hdslb\.com\/bfs\/subtit
 bili-json = type=http-response,pattern=^https:\/\/app\.bilibili\.com\/x\/(v2\/(splash\/(list|show)|feed\/index\?)|resource\/show\/tab\/v2),requires-body=1,max-size=0,script-path=https://raw.githubusercontent.com/app2smile/rules/master/js/bilibili-json.js,script-update-interval=0
 bili-proto = type=http-response,pattern=^https:\/\/(grpc\.biliapi\.net|app\.bilibili\.com)\/bilibili\.app\.(view\.v1\.View\/View|dynamic\.v2\.Dynamic\/DynAll|playurl\.v1\.PlayURL\/PlayView)$,requires-body=1,binary-body-mode=1,max-size=0,script-path=https://raw.githubusercontent.com/app2smile/rules/master/js/bilibili-proto.js,script-update-interval=0
 
+[URL Rewrite]
+# ～ Bilibili开屏去广告
+^https://app.bilibili.com/x/v2/splash/show - reject
 
 [MITM]
 hostname = %APPEND% app.bilibili.com, grpc.biliapi.net, *.hdslb.com
