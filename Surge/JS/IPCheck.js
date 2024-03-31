@@ -20,7 +20,7 @@ $httpClient.get(url, function(error, response, data){
     let isp = jsonData.isp
     let ip = jsonData.query
   body = {
-    title: "𝑰𝑷 𝑪𝒉𝒆𝒄𝒌",
+    title: "𝑰𝑷  𝑪𝒉𝒆𝒄𝒌",
     content: `IP信息：${ip}\n运营商：${isp}\nIP位置：${country} - ${city}`,
     icon: "globe.asia.australia.fill"
   }
