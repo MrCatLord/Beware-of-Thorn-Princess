@@ -1,15 +1,13 @@
 /**
- * Surge Panel 节点测速脚本
+ * Surge Panel 节点测速脚本 (修复延迟检测兼容性与错误提示)
  * 规则：
  * - 图标：< 200Mbps 乌龟 (tortoise) | 200-400Mbps 兔子 (hare) | > 400Mbps 闪电 (bolt.fill)
  * - 颜色：< 100ms 绿色 | >= 100ms 黄色
  */
 
-const DEFAULT_BYTES = 10485760; // 默认下载 10MB (10 * 1024 * 1024)，适合高速节点测速
-const TEST_URL = `https://speed.cloudflare.com/__down?bytes=${DEFAULT_BYTES}`;
+const DEFAULT_BYTES = 10485760; // 默认下载 10MB (10 * 1024 * 1024)
 const PING_URL = "https://cp.cloudflare.com/generate_204";
 
-// 解析外部传入参数 (例如: bytes=20971520&title=节点测速)
 const args = parseArgs(typeof $argument !== "undefined" ? $argument : "");
 const testBytes = parseInt(args.bytes) || DEFAULT_BYTES;
 const panelTitle = args.title || "Net Speed";
@@ -17,13 +15,13 @@ const downloadUrl = args.url || `https://speed.cloudflare.com/__down?bytes=${tes
 
 !(async () => {
   try {
-    // 1. 测试网络延迟 (HTTP 204 握手耗时)
+    // 1. 测量网络延迟
     const latency = await measureLatency(PING_URL);
 
-    // 2. 测试下行速率
+    // 2. 测量下行速率
     const { mbps, mbs, durationSec } = await measureDownloadSpeed(downloadUrl, testBytes);
 
-    // 3. 根据速率决定 SF Symbols 图标
+    // 3. 速率图标映射
     let iconName = "tortoise"; // < 200 Mbps
     if (mbps > 400) {
       iconName = "bolt.fill"; // > 400 Mbps
@@ -31,13 +29,13 @@ const downloadUrl = args.url || `https://speed.cloudflare.com/__down?bytes=${tes
       iconName = "hare"; // 200 - 400 Mbps
     }
 
-    // 4. 根据延迟决定图标颜色 (Apple 系统标准绿/黄)
+    // 4. 延迟颜色映射
     const iconColor = latency < 100 ? "#34C759" : "#FFCC00";
 
-    // 5. 格式化当前执行时间 (HH:mm:ss)
+    // 5. 执行时间
     const execTime = formatTime(new Date());
 
-    // 6. 组装完全还原截图样式的面板内容
+    // 6. 面板内容
     const content = [
       `下行速率: ${mbps.toFixed(0)} Mbps [${mbs.toFixed(1)} MB/s]`,
       `测试耗时: ${durationSec.toFixed(2)}s`,
@@ -52,9 +50,10 @@ const downloadUrl = args.url || `https://speed.cloudflare.com/__down?bytes=${tes
       "icon-color": iconColor
     });
   } catch (err) {
+    const errMsg = err && err.message ? err.message : String(err || "未知错误");
     $done({
       title: panelTitle,
-      content: `测速失败: ${err}\n执行时间: ${formatTime(new Date())}`,
+      content: `测速失败: ${errMsg}\n执行时间: ${formatTime(new Date())}`,
       icon: "exclamationmark.triangle.fill",
       "icon-color": "#FF3B30"
     });
@@ -62,17 +61,17 @@ const downloadUrl = args.url || `https://speed.cloudflare.com/__down?bytes=${tes
 })();
 
 /**
- * 测量单次 HTTP 延迟 (ms)
+ * 测量 HTTP 延迟 (ms) - 使用 GET 请求兼容性更好
  */
 function measureLatency(url) {
   return new Promise((resolve, reject) => {
     const startTime = Date.now();
-    $httpClient.head({ url: url, timeout: 5 }, (error, response) => {
+    $httpClient.get({ url: url, timeout: 5 }, (error, response) => {
       if (error) {
-        reject("连接超时或节点不可用");
+        reject(`延迟测试失败 (${error})`);
         return;
       }
-      const latency = Date.now() - startTime;
+      const latency = Math.max(Date.now() - startTime, 1);
       resolve(latency);
     });
   });
@@ -86,17 +85,23 @@ function measureDownloadSpeed(url, expectedBytes) {
     const startTime = Date.now();
     $httpClient.get({ url: url, timeout: 15 }, (error, response, data) => {
       if (error) {
-        reject("下载测速超时");
+        reject(`下载测试失败 (${error})`);
         return;
       }
       const durationMs = Date.now() - startTime;
-      const durationSec = Math.max(durationMs / 1000, 0.01); // 防止除以 0
+      const durationSec = Math.max(durationMs / 1000, 0.01);
 
-      // 优先使用实际接收的数据长度，若框架未暴露则回退到预设字节数
-      const actualBytes = (data && data.length) ? data.length : expectedBytes;
+      let actualBytes = expectedBytes;
+      if (data) {
+        if (typeof data === "string") {
+          actualBytes = data.length;
+        } else if (data.byteLength) {
+          actualBytes = data.byteLength;
+        }
+      }
 
-      const mbs = (actualBytes / (1024 * 1024)) / durationSec; // MB/s
-      const mbps = (actualBytes * 8 / (1000 * 1000)) / durationSec; // Mbps (网络带宽标准采用 1000 进制)
+      const mbs = actualBytes / (1024 * 1024) / durationSec;
+      const mbps = ((actualBytes * 8) / (1000 * 1000)) / durationSec;
 
       resolve({ mbps, mbs, durationSec });
     });
