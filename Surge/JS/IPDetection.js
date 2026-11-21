@@ -576,7 +576,6 @@ function calculateRisk(results) {
 function getIPType(pureData, proxyData) {
   let type = "未知";
 
-  // IP 类型：IPPure 优先
   if (
     pureData &&
     typeof pureData.residential === "boolean"
@@ -599,8 +598,6 @@ function getIPType(pureData, proxyData) {
     type = proxyData.type;
   }
 
-  // 原生 / 广播属性
-  // 仅使用 IPPure 明确提供的 isBroadcast 字段
   let attribute = "无法确认";
 
   if (
@@ -723,13 +720,11 @@ const MO_DISTRICTS = {
 function stripCitySuffix(value) {
   let name = cleanAreaName(value);
 
-  name = name
+  return name
     .replace(/市$/, "")
     .replace(/地区$/, "")
     .replace(/自治州$/, "")
     .replace(/盟$/, "");
-
-  return name;
 }
 
 // 港澳台下一级地区清理
@@ -828,22 +823,18 @@ async function getGeo(ip) {
   let city = cityA || cityB;
   let region = regionA || regionB;
 
-  // 国家名称统一
   const countryNames = {
     CN: "中国",
-    HK: "中国",
-    MO: "中国",
-    TW: "中国"
+    HK: "香港",
+    MO: "澳门",
+    TW: "台湾"
   };
 
   if (countryNames[countryCode]) {
     country = countryNames[countryCode];
   }
 
-  // =================================
   // 中国大陆
-  // =================================
-
   if (countryCode === "CN") {
     const municipality =
       getMunicipality(region) ||
@@ -863,10 +854,7 @@ async function getGeo(ip) {
     };
   }
 
-  // =================================
   // 香港
-  // =================================
-
   if (countryCode === "HK") {
     const genericNames = [
       "hong kong",
@@ -893,17 +881,14 @@ async function getGeo(ip) {
     }
 
     return {
-      country: "中国",
-      city: "香港",
+      country: "香港",
+      city: "",
       area: area,
       isp: getISP(a, b)
     };
   }
 
-  // =================================
   // 澳门
-  // =================================
-
   if (countryCode === "MO") {
     const genericNames = [
       "macau",
@@ -930,17 +915,14 @@ async function getGeo(ip) {
     }
 
     return {
-      country: "中国",
-      city: "澳门",
+      country: "澳门",
+      city: "",
       area: area,
       isp: getISP(a, b)
     };
   }
 
-  // =================================
   // 台湾
-  // =================================
-
   if (countryCode === "TW") {
     const genericNames = [
       "taiwan",
@@ -967,17 +949,14 @@ async function getGeo(ip) {
     }
 
     return {
-      country: "中国",
-      city: "台湾",
+      country: "台湾",
+      city: "",
       area: area,
       isp: getISP(a, b)
     };
   }
 
-  // =================================
   // 其他国家和地区
-  // =================================
-
   return {
     country: country,
     city: city,
@@ -1014,6 +993,18 @@ function getISP(a, b) {
 
 function formatLocation(geo) {
   if (!geo) return "未知";
+
+  // 港澳台：直接显示地区名称 + 下辖地区
+  if (
+    geo.country === "香港" ||
+    geo.country === "澳门" ||
+    geo.country === "台湾"
+  ) {
+    return [
+      geo.country,
+      geo.area
+    ].filter(Boolean).join(" · ");
+  }
 
   return [
     geo.country,
