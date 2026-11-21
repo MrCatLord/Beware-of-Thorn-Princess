@@ -559,7 +559,7 @@ setTimeout(() => {
 
     // 最终展示：不显示风险数据源明细
     const content = [
-      "【IP 类型与纯净度】",
+      "【IP 信息】",
       `类型：${type.type}`,
       `属性：${type.source}`,
       `纯净度：${risk.text}`,
