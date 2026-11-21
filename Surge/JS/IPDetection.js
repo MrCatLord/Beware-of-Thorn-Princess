@@ -6,15 +6,6 @@
  * 1. Cloudflare / IP.SB / IPPure 多源出口 IP 检测
  * 2. 多源一致性验证，异常分歧识别
  * 3. IPPure > ProxyCheck > Scamalytics 纯净度优先级
- * 4. 所有评分严格匹配同一个落地 IP
- * 5. IP 类型优先 IPPure，ProxyCheck 补充
- * 6. 原生 / 广播属性严格判断，不误判原生 IP
- * 7. IPv4 / IPv6 地址标准化
- * 8. Surge 最近请求识别代理入口 IP
- * 9. 地区：国家 + 城市，不显示省份；北京 / 上海 / 天津 / 重庆直接显示直辖市
- * 10. 请求并行化与总超时保护
- * 11. 异常状态始终红色
- * 12. 支持模块参数自定义标题 / 图标 / 颜色
  */
 
 // =====================================
@@ -303,7 +294,6 @@ async function getOutboundSources() {
     };
   }
 
-  // 统计相同 IP 的来源数量
   const counts = {};
 
   candidates.forEach(ip => {
@@ -372,7 +362,39 @@ function validScore(value) {
 }
 
 // =====================================
-// 10. IPPure
+// 10. 布尔属性兼容解析
+// =====================================
+
+function parseBooleanFlag(value) {
+  if (value === true || value === 1) {
+    return true;
+  }
+
+  if (value === false || value === 0) {
+    return false;
+  }
+
+  if (typeof value === "string") {
+    const v = value.trim().toLowerCase();
+
+    if (
+      ["true", "1", "yes"].includes(v)
+    ) {
+      return true;
+    }
+
+    if (
+      ["false", "0", "no"].includes(v)
+    ) {
+      return false;
+    }
+  }
+
+  return null;
+}
+
+// =====================================
+// 11. IPPure
 // =====================================
 
 function getIPPureData(ip, pure) {
@@ -386,20 +408,18 @@ function getIPPureData(ip, pure) {
 
     score: validScore(pure.fraudScore),
 
-    residential:
-      typeof pure.isResidential === "boolean"
-        ? pure.isResidential
-        : null,
+    residential: parseBooleanFlag(
+      pure.isResidential
+    ),
 
-    broadcast:
-      typeof pure.isBroadcast === "boolean"
-        ? pure.isBroadcast
-        : null
+    broadcast: parseBooleanFlag(
+      pure.isBroadcast
+    )
   };
 }
 
 // =====================================
-// 11. ProxyCheck
+// 12. ProxyCheck
 // =====================================
 
 async function getProxyCheck(ip) {
@@ -458,7 +478,7 @@ async function getProxyCheck(ip) {
 }
 
 // =====================================
-// 12. Scamalytics
+// 13. Scamalytics
 // =====================================
 
 async function getScamalytics(ip) {
@@ -472,9 +492,7 @@ async function getScamalytics(ip) {
 
   const patterns = [
     /Fraud\s*Score\s*<\/[^>]+>\s*<[^>]+>\s*([0-9]{1,3})\s*(?:\/\s*100)?/i,
-
     /Fraud\s*Score[\s\S]{0,60}?([0-9]{1,3})\s*\/\s*100/i,
-
     /Fraud\s*Score\s*[:：]\s*([0-9]{1,3})\b/i
   ];
 
@@ -498,7 +516,7 @@ async function getScamalytics(ip) {
 }
 
 // =====================================
-// 13. 纯净度优先级
+// 14. 纯净度优先级
 // IPPure > ProxyCheck > Scamalytics
 // =====================================
 
@@ -552,13 +570,13 @@ function calculateRisk(results) {
 }
 
 // =====================================
-// 14. IP 类型与属性
+// 15. IP 类型与原生 / 广播属性
 // =====================================
 
 function getIPType(pureData, proxyData) {
   let type = "未知";
 
-  // IPPure 优先
+  // IP 类型：IPPure 优先
   if (
     pureData &&
     typeof pureData.residential === "boolean"
@@ -581,8 +599,9 @@ function getIPType(pureData, proxyData) {
     type = proxyData.type;
   }
 
-  // 广播属性单独判断
-  let attribute = "未知";
+  // 原生 / 广播属性
+  // 仅使用 IPPure 明确提供的 isBroadcast 字段
+  let attribute = "无法确认";
 
   if (
     pureData &&
@@ -590,7 +609,7 @@ function getIPType(pureData, proxyData) {
   ) {
     attribute = pureData.broadcast
       ? "广播 IP"
-      : "未检测到广播属性";
+      : "原生 IP";
   }
 
   return {
@@ -600,7 +619,162 @@ function getIPType(pureData, proxyData) {
 }
 
 // =====================================
-// 15. 地区信息
+// 16. 地区名称标准化
+// =====================================
+
+function cleanAreaName(value) {
+  if (!value || typeof value !== "string") {
+    return "";
+  }
+
+  return value
+    .trim()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// 直辖市名称兼容
+function getMunicipality(value) {
+  const name = cleanAreaName(value).toLowerCase();
+
+  const map = {
+    "北京": "北京",
+    "北京市": "北京",
+    "beijing": "北京",
+    "beijing shi": "北京",
+
+    "上海": "上海",
+    "上海市": "上海",
+    "shanghai": "上海",
+    "shanghai shi": "上海",
+
+    "天津": "天津",
+    "天津市": "天津",
+    "tianjin": "天津",
+    "tianjin shi": "天津",
+
+    "重庆": "重庆",
+    "重庆市": "重庆",
+    "chongqing": "重庆",
+    "chongqing shi": "重庆"
+  };
+
+  return map[name] || "";
+}
+
+// 香港英文区名兼容
+const HK_DISTRICTS = {
+  "central and western": "中西区",
+  "central and western district": "中西区",
+  "eastern": "东区",
+  "eastern district": "东区",
+  "southern": "南区",
+  "southern district": "南区",
+  "wan chai": "湾仔",
+  "wan chai district": "湾仔",
+  "kowloon city": "九龙城",
+  "kowloon city district": "九龙城",
+  "kwun tong": "观塘",
+  "kwun tong district": "观塘",
+  "sham shui po": "深水埗",
+  "sham shui po district": "深水埗",
+  "wong tai sin": "黄大仙",
+  "wong tai sin district": "黄大仙",
+  "yau tsim mong": "油尖旺",
+  "yau tsim mong district": "油尖旺",
+  "islands": "离岛",
+  "islands district": "离岛",
+  "kwai tsing": "葵青",
+  "kwai tsing district": "葵青",
+  "north": "北区",
+  "north district": "北区",
+  "sai kung": "西贡",
+  "sai kung district": "西贡",
+  "sha tin": "沙田",
+  "sha tin district": "沙田",
+  "tai po": "大埔",
+  "tai po district": "大埔",
+  "tsuen wan": "荃湾",
+  "tsuen wan district": "荃湾",
+  "tuen mun": "屯门",
+  "tuen mun district": "屯门",
+  "yuen long": "元朗",
+  "yuen long district": "元朗"
+};
+
+// 澳门英文堂区兼容
+const MO_DISTRICTS = {
+  "nossa senhora de fatima": "花地玛",
+  "nossa senhora de fátima": "花地玛",
+  "santo antonio": "圣安多尼",
+  "santo antónio": "圣安多尼",
+  "sao lazaro": "望德堂",
+  "são lázaro": "望德堂",
+  "se": "大堂",
+  "sé": "大堂",
+  "sao lourenco": "风顺堂",
+  "são lourenço": "风顺堂",
+  "nossa senhora do carmo": "嘉模",
+  "cotai": "路氹",
+  "coloane": "路环"
+};
+
+// 中国大陆城市后缀清理
+function stripCitySuffix(value) {
+  let name = cleanAreaName(value);
+
+  name = name
+    .replace(/市$/, "")
+    .replace(/地区$/, "")
+    .replace(/自治州$/, "")
+    .replace(/盟$/, "");
+
+  return name;
+}
+
+// 港澳台下一级地区清理
+function normalizeSpecialArea(value, code) {
+  let name = cleanAreaName(value);
+
+  if (!name) return "";
+
+  if (code === "HK") {
+    const key = name.toLowerCase();
+
+    if (HK_DISTRICTS[key]) {
+      return HK_DISTRICTS[key];
+    }
+
+    return name
+      .replace(/\s+district$/i, "")
+      .replace(/区$/, "");
+  }
+
+  if (code === "MO") {
+    const key = name.toLowerCase();
+
+    if (MO_DISTRICTS[key]) {
+      return MO_DISTRICTS[key];
+    }
+
+    return name
+      .replace(/\s+(parish|district)$/i, "")
+      .replace(/堂区$/, "")
+      .replace(/区$/, "");
+  }
+
+  if (code === "TW") {
+    return name
+      .replace(/\s+(county|city)$/i, "")
+      .replace(/县$/, "")
+      .replace(/市$/, "");
+  }
+
+  return name;
+}
+
+// =====================================
+// 17. 地区信息查询
 // =====================================
 
 async function getGeo(ip) {
@@ -624,73 +798,218 @@ async function getGeo(ip) {
 
   if (!geoOK && !b) return null;
 
-  const country =
+  const countryCode = String(
+    (geoOK && a.countryCode) ||
+    b?.country ||
+    ""
+  ).toUpperCase();
+
+  let country =
     (geoOK && a.country) ||
     b?.country ||
     "";
 
-  const countryCode =
-    (geoOK && a.countryCode) ||
-    b?.country ||
-    "";
+  const cityA = cleanAreaName(
+    geoOK ? a.city : ""
+  );
 
-  const region =
-    (geoOK && a.regionName) ||
-    b?.region ||
-    "";
+  const cityB = cleanAreaName(
+    b?.city || ""
+  );
 
-  let city =
-    (geoOK && a.city) ||
-    b?.city ||
-    "";
+  const regionA = cleanAreaName(
+    geoOK ? a.regionName : ""
+  );
 
-  // 中国直辖市特殊处理
-  const municipalities = {
-    "北京": "北京市",
-    "北京市": "北京市",
-    "上海": "上海市",
-    "上海市": "上海市",
-    "天津": "天津市",
-    "天津市": "天津市",
-    "重庆": "重庆市",
-    "重庆市": "重庆市"
+  const regionB = cleanAreaName(
+    b?.region || ""
+  );
+
+  let city = cityA || cityB;
+  let region = regionA || regionB;
+
+  // 国家名称统一
+  const countryNames = {
+    CN: "中国",
+    HK: "中国",
+    MO: "中国",
+    TW: "中国"
   };
 
-  if (
-    countryCode === "CN" ||
-    country === "中国"
-  ) {
-    const normalizedRegion = String(region)
-      .trim()
-      .replace(/\s/g, "");
-
-    if (municipalities[normalizedRegion]) {
-      city = municipalities[normalizedRegion];
-    }
+  if (countryNames[countryCode]) {
+    country = countryNames[countryCode];
   }
 
-  // 运营商逐字段回退
-  let isp =
-    (geoOK && a.isp) ||
-    "";
+  // =================================
+  // 中国大陆
+  // =================================
+
+  if (countryCode === "CN") {
+    const municipality =
+      getMunicipality(region) ||
+      getMunicipality(city);
+
+    if (municipality) {
+      city = municipality;
+    } else {
+      city = stripCitySuffix(city);
+    }
+
+    return {
+      country: "中国",
+      city: city,
+      area: "",
+      isp: getISP(a, b)
+    };
+  }
+
+  // =================================
+  // 香港
+  // =================================
+
+  if (countryCode === "HK") {
+    const genericNames = [
+      "hong kong",
+      "hong kong sar",
+      "香港",
+      "香港特别行政区"
+    ];
+
+    let area = "";
+
+    if (
+      region &&
+      !genericNames.includes(region.toLowerCase())
+    ) {
+      area = normalizeSpecialArea(region, "HK");
+    }
+
+    if (
+      !area &&
+      city &&
+      !genericNames.includes(city.toLowerCase())
+    ) {
+      area = normalizeSpecialArea(city, "HK");
+    }
+
+    return {
+      country: "中国",
+      city: "香港",
+      area: area,
+      isp: getISP(a, b)
+    };
+  }
+
+  // =================================
+  // 澳门
+  // =================================
+
+  if (countryCode === "MO") {
+    const genericNames = [
+      "macau",
+      "macao",
+      "澳门",
+      "澳门特别行政区"
+    ];
+
+    let area = "";
+
+    if (
+      region &&
+      !genericNames.includes(region.toLowerCase())
+    ) {
+      area = normalizeSpecialArea(region, "MO");
+    }
+
+    if (
+      !area &&
+      city &&
+      !genericNames.includes(city.toLowerCase())
+    ) {
+      area = normalizeSpecialArea(city, "MO");
+    }
+
+    return {
+      country: "中国",
+      city: "澳门",
+      area: area,
+      isp: getISP(a, b)
+    };
+  }
+
+  // =================================
+  // 台湾
+  // =================================
+
+  if (countryCode === "TW") {
+    const genericNames = [
+      "taiwan",
+      "taiwan province",
+      "台湾",
+      "台湾省"
+    ];
+
+    let area = "";
+
+    if (
+      region &&
+      !genericNames.includes(region.toLowerCase())
+    ) {
+      area = normalizeSpecialArea(region, "TW");
+    }
+
+    if (
+      !area &&
+      city &&
+      !genericNames.includes(city.toLowerCase())
+    ) {
+      area = normalizeSpecialArea(city, "TW");
+    }
+
+    return {
+      country: "中国",
+      city: "台湾",
+      area: area,
+      isp: getISP(a, b)
+    };
+  }
+
+  // =================================
+  // 其他国家和地区
+  // =================================
+
+  return {
+    country: country,
+    city: city,
+    area: "",
+    isp: getISP(a, b)
+  };
+}
+
+// =====================================
+// 18. 运营商逐字段回退
+// =====================================
+
+function getISP(a, b) {
+  let isp = "";
+
+  if (a?.status === "success") {
+    isp = a.isp || "";
+  }
 
   if (!isp && b?.org) {
     isp = b.org.replace(/^AS\d+\s*/i, "");
   }
 
-  if (!isp && geoOK) {
+  if (!isp && a?.status === "success") {
     isp = a.org || a.asname || "";
   }
 
-  return {
-    country: country,
-    city: city,
-    isp: isp || "未知"
-  };
+  return isp || "未知";
 }
 
 // =====================================
-// 16. 地区格式
+// 19. 地区格式
 // =====================================
 
 function formatLocation(geo) {
@@ -698,12 +1017,13 @@ function formatLocation(geo) {
 
   return [
     geo.country,
-    geo.city
+    geo.city,
+    geo.area
   ].filter(Boolean).join(" · ") || "未知";
 }
 
 // =====================================
-// 17. 入口 IP 识别
+// 20. 入口 IP 识别
 // =====================================
 
 function cleanRemoteIP(value) {
@@ -783,7 +1103,7 @@ function getEntranceIP() {
 }
 
 // =====================================
-// 18. IP 信息块
+// 21. IP 信息块
 // =====================================
 
 function buildIPBlock(name, ip, geo) {
@@ -796,7 +1116,7 @@ function buildIPBlock(name, ip, geo) {
 }
 
 // =====================================
-// 19. 总超时保护
+// 22. 总超时保护
 // =====================================
 
 setTimeout(() => {
@@ -807,7 +1127,7 @@ setTimeout(() => {
 }, CFG.totalTimeout * 1000);
 
 // =====================================
-// 20. 主程序
+// 23. 主程序
 // =====================================
 
 (async () => {
