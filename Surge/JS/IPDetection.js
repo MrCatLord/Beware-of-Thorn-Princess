@@ -3,23 +3,29 @@
  * Surge iOS 6 - IP Detection
  * IP 类型 / 纯净度 / 入口 IP / 落地 IP
  *
- * 优化：
- * 1. IPPure、Cloudflare、IP.SB 交叉确认落地 IP
- * 2. IPPure + ProxyCheck + Scamalytics 多源风险检测
- * 3. 所有评分必须对应同一个落地 IP
- * 4. 多源评分避免单一来源误判
- * 5. 住宅、机房、原生、广播分别判断
- * 6. 入口 IP 优先从 Surge 最近请求中提取
- * 7. 国家 + 城市，不显示省份
+ * 1. Cloudflare / IP.SB / IPPure 多源出口 IP 检测
+ * 2. 多源一致性验证，异常分歧识别
+ * 3. IPPure > ProxyCheck > Scamalytics 纯净度优先级
+ * 4. 所有评分严格匹配同一个落地 IP
+ * 5. IP 类型优先 IPPure，ProxyCheck 补充
+ * 6. 原生 / 广播属性严格判断，不误判原生 IP
+ * 7. IPv4 / IPv6 地址标准化
+ * 8. Surge 最近请求识别代理入口 IP
+ * 9. 地区：国家 + 城市，不显示省份；北京 / 上海 / 天津 / 重庆直接显示直辖市
+ * 10. 增加 ASN 与网络组织信息
+ * 11. 地区信息逐字段回退
+ * 12. 请求并行化与总超时保护
+ * 13. 异常状态始终红色
+ * 14. 支持模块参数自定义标题 / 图标 / 颜色
  */
 
-// ==============================
-// 基础配置
-// ==============================
+// =====================================
+// 1. 基础配置
+// =====================================
 
 const CFG = {
   timeout: 6,
-  totalTimeout: 23,
+  totalTimeout: 28,
 
   icon: "bolt.fill",
   iconColor: "#30D158",
@@ -36,18 +42,14 @@ const CFG = {
   ipInfo: "https://ipinfo.io/"
 };
 
+const DEFAULT_TITLE = "IP信息";
+
+let PANEL_TITLE = DEFAULT_TITLE;
 let finished = false;
 
-// ==============================
-// 默认标题
-// ==============================
-
-const DEFAULT_TITLE = "IP信息";
-let PANEL_TITLE = DEFAULT_TITLE;
-
-// ==============================
-// 读取模块参数
-// ==============================
+// =====================================
+// 2. 模块参数
+// =====================================
 
 function parseArguments(raw) {
   const result = {};
@@ -63,11 +65,11 @@ function parseArguments(raw) {
 
     try {
       const key = decodeURIComponent(
-        item.slice(0, index)
+        item.slice(0, index).replace(/\+/g, " ")
       );
 
       const value = decodeURIComponent(
-        item.slice(index + 1)
+        item.slice(index + 1).replace(/\+/g, " ")
       );
 
       result[key] = value;
@@ -86,9 +88,9 @@ PANEL_TITLE = args.panel_title || DEFAULT_TITLE;
 CFG.icon = args.panel_icon || CFG.icon;
 CFG.iconColor = args.panel_color || CFG.iconColor;
 
-// ==============================
-// 统一结束面板
-// ==============================
+// =====================================
+// 3. 统一结束面板
+// =====================================
 
 function finish(content, isError) {
   if (finished) return;
@@ -105,9 +107,9 @@ function finish(content, isError) {
   });
 }
 
-// ==============================
-// HTTP 请求
-// ==============================
+// =====================================
+// 4. HTTP 请求
+// =====================================
 
 function request(url) {
   return new Promise(resolve => {
@@ -150,69 +152,113 @@ async function getJSON(url) {
   }
 }
 
-// ==============================
-// IP 地址校验
-// ==============================
+// =====================================
+// 5. IP 地址校验与标准化
+// =====================================
 
-function validIP(value) {
-  if (typeof value !== "string") return false;
+function normalizeIP(value) {
+  if (typeof value !== "string") return null;
 
-  const ip = value.trim();
+  let ip = value.trim().toLowerCase();
 
+  // IPv4
   const ipv4 = ip.split(".");
 
-  if (
-    ipv4.length === 4 &&
-    ipv4.every(part =>
+  if (ipv4.length === 4) {
+    if (!ipv4.every(part =>
       /^\d{1,3}$/.test(part) &&
       Number(part) >= 0 &&
       Number(part) <= 255
+    )) {
+      return null;
+    }
+
+    return ipv4.map(part =>
+      String(Number(part))
+    ).join(".");
+  }
+
+  // IPv6
+  if (!ip.includes(":")) return null;
+
+  if (!/^[0-9a-f:.]+$/i.test(ip)) {
+    return null;
+  }
+
+  if (ip.includes(".")) {
+    return null;
+  }
+
+  if ((ip.match(/::/g) || []).length > 1) {
+    return null;
+  }
+
+  const compressed = ip.includes("::");
+  const parts = ip.split("::");
+
+  const left = parts[0]
+    ? parts[0].split(":")
+    : [];
+
+  const right = compressed && parts[1]
+    ? parts[1].split(":")
+    : [];
+
+  const all = left.concat(right);
+
+  if (
+    all.some(group =>
+      !/^[0-9a-f]{1,4}$/.test(group)
     )
   ) {
-    return true;
+    return null;
   }
 
   if (
-    ip.includes(":") &&
-    /^[0-9a-f:.]+$/i.test(ip) &&
-    !ip.includes(":::")
+    (!compressed && all.length !== 8) ||
+    (compressed && all.length >= 8)
   ) {
-    const groups = ip.split("::");
-
-    if (groups.length > 2) return false;
-
-    const left = groups[0]
-      ? groups[0].split(":")
-      : [];
-
-    const right =
-      groups.length === 2 && groups[1]
-        ? groups[1].split(":")
-        : [];
-
-    const all = left.concat(right);
-
-    if (
-      all.some(x =>
-        x && !/^[0-9a-f]{1,4}$/i.test(x)
-      )
-    ) {
-      return false;
-    }
-
-    if (groups.length === 1 && all.length !== 8) {
-      return false;
-    }
-
-    if (groups.length === 2 && all.length >= 8) {
-      return false;
-    }
-
-    return true;
+    return null;
   }
 
-  return false;
+  const groups = compressed
+    ? left.concat(
+        Array(8 - all.length).fill("0"),
+        right
+      )
+    : all;
+
+  const normalized = groups.map(group =>
+    parseInt(group || "0", 16)
+      .toString(16)
+  );
+
+  // IPv4-mapped IPv6 转换
+  if (
+    normalized.slice(0, 5).every(x => x === "0") &&
+    normalized[5] === "ffff"
+  ) {
+    const a = parseInt(normalized[6], 16);
+    const b = parseInt(normalized[7], 16);
+
+    return [
+      a >> 8,
+      a & 255,
+      b >> 8,
+      b & 255
+    ].join(".");
+  }
+
+  return normalized.join(":");
 }
+
+function validIP(value) {
+  return normalizeIP(value) !== null;
+}
+
+// =====================================
+// 6. Cloudflare Trace
+// =====================================
 
 function parseTrace(body) {
   if (!body || typeof body !== "string") {
@@ -220,14 +266,15 @@ function parseTrace(body) {
   }
 
   const match = body.match(/^ip=(.+)$/m);
-  const ip = match ? match[1].trim() : null;
 
-  return validIP(ip) ? ip : null;
+  return match
+    ? normalizeIP(match[1])
+    : null;
 }
 
-// ==============================
-// 获取出口 IP
-// ==============================
+// =====================================
+// 7. 出口 IP 多源检测
+// =====================================
 
 async function getOutboundSources() {
   const [pure, traceBody, sb] = await Promise.all([
@@ -236,37 +283,83 @@ async function getOutboundSources() {
     getJSON(CFG.ipSB)
   ]);
 
-  const cfIP = parseTrace(traceBody);
+  const results = {
+    cf: parseTrace(traceBody),
 
-  const sbIP = validIP(sb?.ip)
-    ? sb.ip
-    : null;
+    sb: normalizeIP(sb?.ip),
 
-  const pureIP = validIP(pure?.ip)
-    ? pure.ip
-    : null;
+    pure: normalizeIP(pure?.ip),
+
+    pureData: pure
+  };
+
+  const candidates = [
+    results.cf,
+    results.sb,
+    results.pure
+  ].filter(Boolean);
+
+  if (!candidates.length) {
+    return {
+      ip: null,
+      conflict: false,
+      count: 0,
+      sources: results
+    };
+  }
+
+  // 统计相同 IP 的来源数量
+  const counts = {};
+
+  candidates.forEach(ip => {
+    counts[ip] = (counts[ip] || 0) + 1;
+  });
+
+  let selected = null;
+  let maxCount = 0;
+
+  Object.keys(counts).forEach(ip => {
+    if (counts[ip] > maxCount) {
+      maxCount = counts[ip];
+      selected = ip;
+    }
+  });
+
+  // 一致性优先
+  // 无法形成多数时，采用 CF > IP.SB > IPPure
+  if (maxCount < 2) {
+    selected =
+      results.cf ||
+      results.sb ||
+      results.pure;
+  }
 
   return {
-    ip: cfIP || sbIP || pureIP,
-    pure: pure
+    ip: selected,
+
+    conflict: Object.keys(counts).length > 1,
+
+    count: candidates.length,
+
+    sources: results
   };
 }
 
-// ==============================
-// IPPure IP 匹配
-// ==============================
+// =====================================
+// 8. IP 匹配
+// =====================================
 
 function pureMatchesIP(pure, ip) {
   return !!(
     pure &&
-    validIP(pure.ip) &&
-    pure.ip === ip
+    normalizeIP(pure.ip) &&
+    normalizeIP(pure.ip) === normalizeIP(ip)
   );
 }
 
-// ==============================
-// 评分校验
-// ==============================
+// =====================================
+// 9. 评分校验
+// =====================================
 
 function validScore(value) {
   if (
@@ -279,51 +372,43 @@ function validScore(value) {
 
   const n = Number(value);
 
-  return Number.isFinite(n) && n >= 0 && n <= 100
-    ? n
-    : null;
+  return Number.isFinite(n) &&
+    n >= 0 &&
+    n <= 100
+      ? n
+      : null;
 }
 
-// ==============================
-// IPPure 检测
-// ==============================
+// =====================================
+// 10. IPPure
+// =====================================
 
-async function getIPPureData(ip, pure) {
-  let data = pureMatchesIP(pure, ip)
-    ? pure
-    : null;
-
-  if (!data) {
-    const other = await getJSON(CFG.ippure);
-
-    if (pureMatchesIP(other, ip)) {
-      data = other;
-    }
+function getIPPureData(ip, pure) {
+  if (!pureMatchesIP(pure, ip)) {
+    return null;
   }
-
-  if (!data) return null;
 
   return {
     source: "IPPure",
-    ip: data.ip,
+    ip: normalizeIP(pure.ip),
 
-    score: validScore(data.fraudScore),
+    score: validScore(pure.fraudScore),
 
     residential:
-      typeof data.isResidential === "boolean"
-        ? data.isResidential
+      typeof pure.isResidential === "boolean"
+        ? pure.isResidential
         : null,
 
     broadcast:
-      typeof data.isBroadcast === "boolean"
-        ? data.isBroadcast
+      typeof pure.isBroadcast === "boolean"
+        ? pure.isBroadcast
         : null
   };
 }
 
-// ==============================
-// ProxyCheck 检测
-// ==============================
+// =====================================
+// 11. ProxyCheck
+// =====================================
 
 async function getProxyCheck(ip) {
   const data = await getJSON(
@@ -342,20 +427,32 @@ async function getProxyCheck(ip) {
 
   const item = data[ip];
 
-  const type = String(item.type || "");
-  const proxy = String(item.proxy || "").toLowerCase();
+  const type = String(item.type || "")
+    .toLowerCase();
 
+  const proxy = String(item.proxy || "")
+    .toLowerCase();
+
+  let category = "未知";
   let residential = null;
 
-  if (/residential|wireless|mobile/i.test(type)) {
+  if (/residential/.test(type)) {
+    category = "住宅 IP";
     residential = true;
-  } else if (/hosting|datacenter|business/i.test(type)) {
+  } else if (/mobile|wireless/.test(type)) {
+    category = "移动/无线 IP";
+    residential = true;
+  } else if (/hosting|datacenter/.test(type)) {
+    category = "机房 IP";
+    residential = false;
+  } else if (/business/.test(type)) {
+    category = "商业 IP";
     residential = false;
   }
 
   return {
     source: "ProxyCheck",
-    ip: ip,
+    ip: normalizeIP(ip),
 
     score: validScore(item.risk),
 
@@ -363,15 +460,15 @@ async function getProxyCheck(ip) {
       proxy === "yes" ? true :
       proxy === "no" ? false : null,
 
-    type: type || "未知",
+    type: category,
 
     residential: residential
   };
 }
 
-// ==============================
-// Scamalytics 检测
-// ==============================
+// =====================================
+// 12. Scamalytics
+// =====================================
 
 async function getScamalytics(ip) {
   const html = await request(
@@ -382,10 +479,13 @@ async function getScamalytics(ip) {
 
   let score = null;
 
+  // 优先匹配明确的 Fraud Score 字段
   const patterns = [
-    /Fraud Score[\s\S]{0,100}?([0-9]{1,3})\s*(?:\/\s*100)?/i,
-    /scamalytics\.com[\s\S]{0,300}?fraud[\s\S]{0,100}?([0-9]{1,3})/i,
-    /class=["'][^"']*score[^"']*["'][^>]*>\s*([0-9]{1,3})/i
+    /Fraud\s*Score\s*<\/[^>]+>\s*<[^>]+>\s*([0-9]{1,3})\s*(?:\/\s*100)?/i,
+
+    /Fraud\s*Score[\s\S]{0,60}?([0-9]{1,3})\s*\/\s*100/i,
+
+    /Fraud\s*Score\s*[:：]\s*([0-9]{1,3})\b/i
   ];
 
   for (const pattern of patterns) {
@@ -402,15 +502,15 @@ async function getScamalytics(ip) {
 
   return {
     source: "Scamalytics",
-    ip: ip,
+    ip: normalizeIP(ip),
     score: score
   };
 }
 
-// ==============================
-// 纯净度评分
+// =====================================
+// 13. 纯净度优先级
 // IPPure > ProxyCheck > Scamalytics
-// ==============================
+// =====================================
 
 function calculateRisk(results) {
   const priority = [
@@ -420,12 +520,11 @@ function calculateRisk(results) {
   ];
 
   for (const source of priority) {
-    const item = results.find(item =>
-      item &&
-      item.source === source &&
-      validIP(item.ip) &&
-      item.score !== null &&
-      item.score !== undefined
+    const item = results.find(result =>
+      result &&
+      result.source === source &&
+      result.score !== null &&
+      result.score !== undefined
     );
 
     if (!item) continue;
@@ -462,55 +561,57 @@ function calculateRisk(results) {
   };
 }
 
-// ==============================
-// IP 类型与属性
-// IPPure 优先，ProxyCheck 备用
-// ==============================
+// =====================================
+// 14. IP 类型与属性
+// =====================================
 
 function getIPType(pureData, proxyData) {
-  let residential = null;
+  let type = "未知";
 
+  // IPPure 优先
   if (
     pureData &&
     typeof pureData.residential === "boolean"
   ) {
-    residential = pureData.residential;
+    if (pureData.residential) {
+      type = "住宅 IP";
+    } else if (
+      proxyData &&
+      proxyData.residential === false &&
+      proxyData.type !== "未知"
+    ) {
+      type = proxyData.type;
+    } else {
+      type = "非住宅 IP";
+    }
   } else if (
     proxyData &&
-    typeof proxyData.residential === "boolean"
+    proxyData.type !== "未知"
   ) {
-    residential = proxyData.residential;
+    type = proxyData.type;
   }
 
-  let type = "未知";
-
-  if (residential === true) {
-    type = "住宅 IP";
-  } else if (residential === false) {
-    type = "机房/非住宅 IP";
-  }
-
-  // 原生 / 广播只采用 IPPure 的明确结果
-  let source = "未知";
+  // 广播属性单独判断
+  let attribute = "未知";
 
   if (
     pureData &&
     typeof pureData.broadcast === "boolean"
   ) {
-    source = pureData.broadcast
+    attribute = pureData.broadcast
       ? "广播 IP"
-      : "原生 IP";
+      : "未检测到广播属性";
   }
 
   return {
     type: type,
-    source: source
+    attribute: attribute
   };
 }
 
-// ==============================
-// 地区与运营商
-// ==============================
+// =====================================
+// 15. 地区信息
+// =====================================
 
 async function getGeo(ip) {
   if (!ip) return null;
@@ -519,7 +620,7 @@ async function getGeo(ip) {
     getJSON(
       CFG.geoAPI +
       encodeURIComponent(ip) +
-      "?lang=zh-CN&fields=status,country,city,isp,org"
+      "?lang=zh-CN&fields=status,country,countryCode,city,regionName,isp,org,as,asname"
     ),
 
     getJSON(
@@ -529,32 +630,114 @@ async function getGeo(ip) {
     )
   ]);
 
-  const ok = a?.status === "success";
+  const geoOK = a?.status === "success";
 
-  if (!ok && !b) return null;
+  if (!geoOK && !b) return null;
 
-  let isp = ok ? (a.isp || "") : "";
+  const country =
+    (geoOK && a.country) ||
+    b?.country ||
+    "";
+
+  const countryCode =
+    (geoOK && a.countryCode) ||
+    b?.country ||
+    "";
+
+  const region =
+    (geoOK && a.regionName) ||
+    b?.region ||
+    "";
+
+  let city =
+    (geoOK && a.city) ||
+    b?.city ||
+    "";
+
+  // 中国直辖市特殊处理
+  const municipalities = {
+    "北京": "北京市",
+    "北京市": "北京市",
+    "上海": "上海市",
+    "上海市": "上海市",
+    "天津": "天津市",
+    "天津市": "天津市",
+    "重庆": "重庆市",
+    "重庆市": "重庆市"
+  };
+
+  if (
+    countryCode === "CN" ||
+    country === "中国"
+  ) {
+    const normalizedRegion = String(region)
+      .trim()
+      .replace(/\s/g, "");
+
+    if (municipalities[normalizedRegion]) {
+      city = municipalities[normalizedRegion];
+    }
+  }
+
+  // 运营商逐字段回退
+  let isp =
+    (geoOK && a.isp) ||
+    "";
 
   if (!isp && b?.org) {
     isp = b.org.replace(/^AS\d+\s*/i, "");
   }
 
+  if (!isp && geoOK) {
+    isp = a.org || a.asname || "";
+  }
+
+  // ASN 信息
+  let asn = "";
+  let asOrg = "";
+
+  if (geoOK && a.as) {
+    const match = String(a.as).match(/AS\d+/i);
+
+    asn = match ? match[0].toUpperCase() : "";
+
+    asOrg = a.asname || a.org || "";
+  }
+
+  if (!asn && b?.org) {
+    const match = String(b.org).match(/AS\d+/i);
+
+    asn = match ? match[0].toUpperCase() : "";
+
+    asOrg = b.org.replace(/^AS\d+\s*/i, "");
+  }
+
   return {
-    country: ok
-      ? a.country
-      : b?.country || "",
+    country: country,
+    city: city,
+    isp: isp || "未知",
 
-    city: ok
-      ? a.city
-      : b?.city || "",
-
-    isp: isp || "未知"
+    asn: asn,
+    asOrg: asOrg
   };
 }
 
-// ==============================
-// 入口 IP 识别
-// ==============================
+// =====================================
+// 16. 地区格式
+// =====================================
+
+function formatLocation(geo) {
+  if (!geo) return "未知";
+
+  return [
+    geo.country,
+    geo.city
+  ].filter(Boolean).join(" · ") || "未知";
+}
+
+// =====================================
+// 17. 入口 IP 识别
+// =====================================
 
 function cleanRemoteIP(value) {
   if (!value || typeof value !== "string") {
@@ -562,19 +745,28 @@ function cleanRemoteIP(value) {
   }
 
   let ip = value
-    .replace(/\s*\(Proxy\)\s*/i, "")
+    .replace(/\s*\(Proxy\)\s*/ig, "")
     .trim();
 
+  // IPv6 [地址]:端口
   if (ip.startsWith("[")) {
-    ip = ip.replace(
-      /^\[([^\]]+)\](?::\d+)?$/,
-      "$1"
+    const match = ip.match(/^\[([^\]]+)\](?::\d+)?$/);
+
+    if (!match) return null;
+
+    ip = match[1];
+  } else {
+    // IPv4:端口
+    const match = ip.match(
+      /^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/
     );
-  } else if ((ip.match(/:/g) || []).length === 1) {
-    ip = ip.replace(/:\d+$/, "");
+
+    if (match) {
+      ip = match[1];
+    }
   }
 
-  return validIP(ip) ? ip : null;
+  return normalizeIP(ip);
 }
 
 function getEntranceIP() {
@@ -602,6 +794,7 @@ function getEntranceIP() {
 
             const remote = item.remoteAddress || "";
 
+            // 必须明确为代理连接
             if (!/\(Proxy\)/i.test(remote)) {
               continue;
             }
@@ -623,106 +816,125 @@ function getEntranceIP() {
   });
 }
 
-// ==============================
-// 地区格式
-// ==============================
-
-function formatLocation(geo) {
-  if (!geo) return "未知";
-
-  return [
-    geo.country,
-    geo.city
-  ].filter(Boolean).join(" · ") || "未知";
-}
-
-// ==============================
-// IP 信息块
-// ==============================
+// =====================================
+// 18. IP 信息块
+// =====================================
 
 function buildIPBlock(name, ip, geo) {
-  return [
+  const lines = [
     `【${name}】`,
     `IP：${ip || "获取失败"}`,
     `地区：${formatLocation(geo)}`,
     `运营商：${geo?.isp || "未知"}`
-  ].join("\n");
+  ];
+
+  if (geo?.asn) {
+    lines.push(
+      `ASN：${geo.asn}${geo.asOrg ? " · " + geo.asOrg : ""}`
+    );
+  }
+
+  return lines.join("\n");
 }
 
-// ==============================
-// 总超时保护
-// ==============================
+// =====================================
+// 19. 总超时保护
+// =====================================
 
 setTimeout(() => {
-  finish("检测超时，请手动刷新重试。", true);
+  finish(
+    "检测超时，请手动刷新重试。",
+    true
+  );
 }, CFG.totalTimeout * 1000);
 
-// ==============================
-// 主程序
-// ==============================
+// =====================================
+// 20. 主程序
+// =====================================
 
 (async () => {
   try {
+    // 获取出口 IP
     const sources = await getOutboundSources();
 
     const outboundIP = sources.ip;
 
     if (!outboundIP) {
-      finish("落地 IP 获取失败，请检查网络。", true);
+      finish(
+        "落地 IP 获取失败，请检查网络。",
+        true
+      );
       return;
     }
 
-    const matchedPure = pureMatchesIP(
-      sources.pure,
-      outboundIP
-    )
-      ? sources.pure
-      : null;
+    // IPPure 必须与落地 IP 匹配
+    const pureData = getIPPureData(
+      outboundIP,
+      sources.sources.pureData
+    );
 
+    // 并行执行检测
     const [
-      pureData,
       proxyData,
       scamData,
       entranceIP,
       outboundGeo
     ] = await Promise.all([
-      getIPPureData(outboundIP, matchedPure),
       getProxyCheck(outboundIP),
       getScamalytics(outboundIP),
       getEntranceIP(),
       getGeo(outboundIP)
     ]);
 
-    // 只接收与当前落地 IP 匹配的数据
+    // 评分必须对应相同 IP
     const riskResults = [
       pureData,
       proxyData,
       scamData
     ].filter(item =>
       item &&
-      item.ip === outboundIP
+      normalizeIP(item.ip) === normalizeIP(outboundIP)
     );
 
-    // 按优先级选择纯净度
+    // 纯净度
     const risk = calculateRisk(riskResults);
 
-    // 按优先级选择 IP 类型和属性
+    // IP 类型与属性
     const type = getIPType(
       pureData,
       proxyData
     );
 
-    // 获取入口 IP 地理信息
+    // 入口地区
     const entranceGeo = entranceIP
       ? await getGeo(entranceIP)
       : null;
 
-    // 最终展示
+    // 检测来源状态
+    const sourceCount = sources.count;
+
+    const sourceStatus = sources.conflict
+      ? "来源分歧"
+      : sourceCount === 3
+        ? "三源一致"
+        : sourceCount === 2
+          ? "双源一致"
+          : "单源获取";
+
+    // 评分来源完整度
+    const scoreCount = riskResults.filter(item =>
+      item.score !== null
+    ).length;
+
+    // 最终内容
     const content = [
       "【IP信息】",
       `类型：${type.type}`,
-      `属性：${type.source}`,
+      `属性：${type.attribute}`,
       `纯净度：${risk.text}`,
+      `评分来源：${risk.source || "无"}`,
+      `检测状态：${sourceStatus}`,
+      `评分源：${scoreCount}/3`,
       "",
       buildIPBlock(
         "入口 IP",
@@ -737,7 +949,12 @@ setTimeout(() => {
       )
     ].join("\n");
 
-    finish(content, false);
+    // 异常状态
+    const isError =
+      sources.conflict ||
+      risk.score === null;
+
+    finish(content, isError);
 
   } catch (e) {
     finish(
