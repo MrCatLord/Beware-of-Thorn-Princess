@@ -35,7 +35,7 @@ const CFG = {
 let finished = false;
 
 const PANEL_TITLE =
-  typeof $input !== "undefined" && $input.panelname
+  typeof $input !== "undefined" && $input.title
     ? $input.title
     : "IP 信息";
 
