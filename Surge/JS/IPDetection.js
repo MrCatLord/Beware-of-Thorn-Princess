@@ -1181,7 +1181,7 @@ setTimeout(() => {
 
     // 最终面板内容
     const content = [
-      "【IP信息】",
+      "【IP 信息】",
       `类型：${type.type}`,
       `属性：${type.attribute}`,
       `纯净度：${risk.text}`,
