@@ -3,183 +3,138 @@ const APPLE_URL = "https://mensura.cdn-apple.com/api/v1/gm/large";
 const PING_URL = "http://www.gstatic.com/generate_204";
 
 const CONCURRENCY = 4;
-const CHUNK_SIZE = 8 * 1024 * 1024;
+const CHUNK_SIZE = 4 * 1024 * 1024;
 const TEST_DURATION = 10000;
 
-function median(arr) {
-  const a = arr.slice().sort((x, y) => x - y);
-  const n = a.length;
-  if (!n) return 0;
-  return n % 2 ? a[(n - 1) / 2] : (a[n / 2 - 1] + a[n / 2]) / 2;
-}
-
-function pingOnce() {
+function request(url, headers = {}) {
   return new Promise((resolve, reject) => {
-    const start = Date.now();
-
     $httpClient.get({
-      url: PING_URL,
-      timeout: 10,
-      headers: {
-        "Cache-Control": "no-cache"
-      }
-    }, (error, response) => {
+      url,
+      timeout: 20,
+      headers
+    }, (error, response, body) => {
       if (error) {
-        reject(new Error("Google 延迟请求失败：" + error));
+        reject(new Error(String(error)));
         return;
       }
-
       if (!response) {
-        reject(new Error("Google 延迟服务器无响应"));
+        reject(new Error("服务器无响应"));
         return;
       }
-
-      const status = response.statusCode || response.status;
-
-      if (status !== 204) {
-        reject(new Error("Google HTTP 状态码：" + status));
-        return;
-      }
-
-      resolve(Date.now() - start);
+      resolve({ response, body: body || "" });
     });
   });
 }
 
-async function latencyTest() {
-  await pingOnce(); // 预热
+async function pingOnce() {
+  const start = Date.now();
+  const result = await request(PING_URL, {
+    "Cache-Control": "no-cache"
+  });
 
+  const status = result.response.statusCode;
+  if (status !== 204) {
+    throw new Error("延迟测试 HTTP 状态码：" + status);
+  }
+  return Date.now() - start;
+}
+
+async function latencyTest() {
+  await pingOnce();
   const samples = [];
 
   for (let i = 0; i < 8; i++) {
     samples.push(await pingOnce());
   }
 
-  return median(samples);
+  samples.sort((a, b) => a - b);
+  return (samples[3] + samples[4]) / 2;
 }
 
 async function downloadTest() {
-  let nextOffset = 0;
+  let offset = 0;
   let totalBytes = 0;
-  let failure = null;
-
-  const controllers = [];
-  const start = performance.now();
+  let errorMessage = "";
+  const start = Date.now();
   const deadline = start + TEST_DURATION;
 
   async function worker() {
-    while (performance.now() < deadline && !failure) {
-      const offset = nextOffset;
-      nextOffset += CHUNK_SIZE;
-
-      const end = offset + CHUNK_SIZE - 1;
-      const controller = new AbortController();
-      controllers.push(controller);
+    while (Date.now() < deadline && !errorMessage) {
+      const current = offset;
+      offset += CHUNK_SIZE;
 
       try {
-        const response = await fetch(APPLE_URL, {
-          method: "GET",
-          headers: {
-            "Range": "bytes=" + offset + "-" + end,
-            "Cache-Control": "no-cache"
-          },
-          cache: "no-store",
-          credentials: "omit",
-          signal: controller.signal
+        const result = await request(APPLE_URL, {
+          "Range": "bytes=" + current + "-" +
+            (current + CHUNK_SIZE - 1),
+          "Accept-Encoding": "identity",
+          "Cache-Control": "no-cache"
         });
 
-        if (response.status !== 206) {
-          controller.abort();
-          throw new Error(
-            "Apple CDN 不支持预期的分段下载，HTTP " +
-            response.status
-          );
+        const status = result.response.statusCode;
+
+        if (status !== 206) {
+          errorMessage = "Apple CDN HTTP " + status +
+            "，未返回预期的 206 分段数据";
+          break;
         }
 
-        const reader = response.body.getReader();
-
-        while (true) {
-          const result = await reader.read();
-
-          if (result.done) break;
-
-          totalBytes += result.value.byteLength;
-
-          if (performance.now() >= deadline) {
-            controller.abort();
-            break;
-          }
+        const size = result.body.length;
+        if (size > 0) {
+          totalBytes += size;
+        } else {
+          errorMessage = "Apple CDN 返回了空数据";
+          break;
         }
-
       } catch (e) {
-        if (e.name !== "AbortError" && !failure) {
-          failure = e;
-        }
+        errorMessage = String(e.message || e);
+        break;
       }
     }
   }
 
-  const timer = setTimeout(() => {
-    controllers.forEach(c => c.abort());
-  }, TEST_DURATION);
+  await Promise.all(
+    Array.from({ length: CONCURRENCY }, () => worker())
+  );
 
-  try {
-    await Promise.all(
-      Array.from({ length: CONCURRENCY }, () => worker())
-    );
-  } finally {
-    clearTimeout(timer);
-    controllers.forEach(c => c.abort());
+  const elapsed = (Date.now() - start) / 1000;
+
+  if (errorMessage) {
+    throw new Error(errorMessage);
   }
 
-  const elapsed = (performance.now() - start) / 1000;
-
-  if (failure) throw failure;
-
-  if (totalBytes === 0) {
-    throw new Error("Apple CDN 没有返回有效下载数据");
+  if (!totalBytes) {
+    throw new Error("下载数据为 0，请检查 Apple CDN 分段请求");
   }
 
   return {
     speed: totalBytes * 8 / elapsed / 1000000,
-    elapsed: elapsed,
-    bytes: totalBytes
-  };
-}
-
-async function main() {
-  const totalStart = Date.now();
-
-  const ping = await latencyTest();
-  const download = await downloadTest();
-
-  const totalTime = (Date.now() - totalStart) / 1000;
-
-  let icon = "tortoise";
-
-  if (download.speed >= 300) {
-    icon = "bolt";
-  } else if (download.speed >= 100) {
-    icon = "hare";
-  }
-
-  const latencyIcon = ping < 100 ? "🟢" : "🟡";
-
-  return {
-    title: "NetSpeed",
-    content:
-      "下行速率：" + download.speed.toFixed(2) + " Mbps\n" +
-      "网络延迟：" + latencyIcon + " " + ping.toFixed(1) + " ms\n" +
-      "测试耗时：" + totalTime.toFixed(1) + " 秒",
-    icon: icon,
-    "icon-color": ping < 100 ? "#16A36A" : "#D69B28"
+    elapsed
   };
 }
 
 (async () => {
   try {
-    const result = await main();
-    $done(result);
+    const ping = await latencyTest();
+    const download = await downloadTest();
+
+    let icon = "tortoise";
+    if (download.speed >= 300) {
+      icon = "bolt";
+    } else if (download.speed >= 100) {
+      icon = "hare";
+    }
+
+    $done({
+      title: "NetSpeed",
+      content:
+        "下行速率：" + download.speed.toFixed(2) + " Mbps\n" +
+        "网络延迟：" + (ping < 100 ? "🟢" : "🟡") +
+        " " + ping + " ms\n" +
+        "测试耗时：" + download.elapsed.toFixed(1) + " 秒",
+      icon,
+      "icon-color": ping < 100 ? "#16A36A" : "#D69B28"
+    });
   } catch (e) {
     $done({
       title: "NetSpeed",
