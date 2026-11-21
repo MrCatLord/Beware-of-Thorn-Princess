@@ -19,7 +19,7 @@ const CFG = {
 
   icon: "bolt.fill",
   iconColor: "#30D158",
-  errorColor: "#FF3B30",
+  errorColor: "#EF476F",
 
   ippure: "https://my.ippure.com/v1/info",
   cfTrace: "https://1.1.1.1/cdn-cgi/trace",
