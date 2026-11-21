@@ -12,11 +12,9 @@
  * 7. IPv4 / IPv6 地址标准化
  * 8. Surge 最近请求识别代理入口 IP
  * 9. 地区：国家 + 城市，不显示省份；北京 / 上海 / 天津 / 重庆直接显示直辖市
- * 10. 增加 ASN 与网络组织信息
- * 11. 地区信息逐字段回退
- * 12. 请求并行化与总超时保护
- * 13. 异常状态始终红色
- * 14. 支持模块参数自定义标题 / 图标 / 颜色
+ * 10. 请求并行化与总超时保护
+ * 11. 异常状态始终红色
+ * 12. 支持模块参数自定义标题 / 图标 / 颜色
  */
 
 // =====================================
@@ -233,7 +231,7 @@ function normalizeIP(value) {
       .toString(16)
   );
 
-  // IPv4-mapped IPv6 转换
+  // IPv4-mapped IPv6
   if (
     normalized.slice(0, 5).every(x => x === "0") &&
     normalized[5] === "ffff"
@@ -285,11 +283,8 @@ async function getOutboundSources() {
 
   const results = {
     cf: parseTrace(traceBody),
-
     sb: normalizeIP(sb?.ip),
-
     pure: normalizeIP(pure?.ip),
-
     pureData: pure
   };
 
@@ -325,8 +320,8 @@ async function getOutboundSources() {
     }
   });
 
-  // 一致性优先
-  // 无法形成多数时，采用 CF > IP.SB > IPPure
+  // 多数一致优先
+  // 无多数时：CF > IP.SB > IPPure
   if (maxCount < 2) {
     selected =
       results.cf ||
@@ -336,11 +331,8 @@ async function getOutboundSources() {
 
   return {
     ip: selected,
-
     conflict: Object.keys(counts).length > 1,
-
     count: candidates.length,
-
     sources: results
   };
 }
@@ -461,7 +453,6 @@ async function getProxyCheck(ip) {
       proxy === "no" ? false : null,
 
     type: category,
-
     residential: residential
   };
 }
@@ -479,7 +470,6 @@ async function getScamalytics(ip) {
 
   let score = null;
 
-  // 优先匹配明确的 Fraud Score 字段
   const patterns = [
     /Fraud\s*Score\s*<\/[^>]+>\s*<[^>]+>\s*([0-9]{1,3})\s*(?:\/\s*100)?/i,
 
@@ -692,33 +682,10 @@ async function getGeo(ip) {
     isp = a.org || a.asname || "";
   }
 
-  // ASN 信息
-  let asn = "";
-  let asOrg = "";
-
-  if (geoOK && a.as) {
-    const match = String(a.as).match(/AS\d+/i);
-
-    asn = match ? match[0].toUpperCase() : "";
-
-    asOrg = a.asname || a.org || "";
-  }
-
-  if (!asn && b?.org) {
-    const match = String(b.org).match(/AS\d+/i);
-
-    asn = match ? match[0].toUpperCase() : "";
-
-    asOrg = b.org.replace(/^AS\d+\s*/i, "");
-  }
-
   return {
     country: country,
     city: city,
-    isp: isp || "未知",
-
-    asn: asn,
-    asOrg: asOrg
+    isp: isp || "未知"
   };
 }
 
@@ -794,7 +761,6 @@ function getEntranceIP() {
 
             const remote = item.remoteAddress || "";
 
-            // 必须明确为代理连接
             if (!/\(Proxy\)/i.test(remote)) {
               continue;
             }
@@ -821,20 +787,12 @@ function getEntranceIP() {
 // =====================================
 
 function buildIPBlock(name, ip, geo) {
-  const lines = [
+  return [
     `【${name}】`,
     `IP：${ip || "获取失败"}`,
     `地区：${formatLocation(geo)}`,
     `运营商：${geo?.isp || "未知"}`
-  ];
-
-  if (geo?.asn) {
-    lines.push(
-      `ASN：${geo.asn}${geo.asOrg ? " · " + geo.asOrg : ""}`
-    );
-  }
-
-  return lines.join("\n");
+  ].join("\n");
 }
 
 // =====================================
@@ -910,31 +868,12 @@ setTimeout(() => {
       ? await getGeo(entranceIP)
       : null;
 
-    // 检测来源状态
-    const sourceCount = sources.count;
-
-    const sourceStatus = sources.conflict
-      ? "来源分歧"
-      : sourceCount === 3
-        ? "三源一致"
-        : sourceCount === 2
-          ? "双源一致"
-          : "单源获取";
-
-    // 评分来源完整度
-    const scoreCount = riskResults.filter(item =>
-      item.score !== null
-    ).length;
-
-    // 最终内容
+    // 最终面板内容
     const content = [
       "【IP信息】",
       `类型：${type.type}`,
       `属性：${type.attribute}`,
       `纯净度：${risk.text}`,
-      `评分来源：${risk.source || "无"}`,
-      `检测状态：${sourceStatus}`,
-      `评分源：${scoreCount}/3`,
       "",
       buildIPBlock(
         "入口 IP",
@@ -949,7 +888,7 @@ setTimeout(() => {
       )
     ].join("\n");
 
-    // 异常状态
+    // 异常状态始终红色
     const isError =
       sources.conflict ||
       risk.score === null;
