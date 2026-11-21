@@ -13,6 +13,7 @@
  * 7. 国家 + 城市，不显示省份
  */
 
+
 const CFG = {
   timeout: 6,
   totalTimeout: 23,
@@ -38,7 +39,7 @@ const PANEL_TITLE =
   typeof $input !== "undefined" && $input.panelName
     ? $input.panelName
     : "IP 信息";
-    
+
 // 读取模块参数
 function parseArguments(raw) {
   const result = {};
