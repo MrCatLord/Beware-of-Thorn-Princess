@@ -35,9 +35,9 @@ const CFG = {
 let finished = false;
 
 const PANEL_TITLE =
-  typeof $input !== "undefined" && $input.title
-    ? $input.title
-    : "𝑰𝑷 𝑪𝒉𝒆𝒄𝒌";
+  typeof $input !== "undefined" && $input.Panelname
+    ? $input.Panelname
+    : "IP 信息";
 
 // 读取模块参数
 function parseArguments(raw) {
