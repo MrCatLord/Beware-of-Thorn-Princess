@@ -1,274 +1,325 @@
 
-const $ = new Env('network-speed')
+/**
+ * NetSpeed for Surge
+ * Cloudflare Speed Test compatible implementation
+ * Download / Upload / Latency / Jitter
+ */
 
-$.isPanel = () =>
-  $.isSurge() &&
-  typeof $input !== 'undefined' &&
-  $.lodash_get($input, 'purpose') === 'panel'
+const BASE = "https://speed.cloudflare.com";
+const MB = 1024 * 1024;
 
-let arg = {}
-if (typeof $argument !== 'undefined' && $argument) {
-  arg = Object.fromEntries(
-    $argument.split('&').map(item => {
-      const i = item.indexOf('=')
-      return i < 0
-        ? [decodeURIComponent(item), '']
-        : [
-            decodeURIComponent(item.slice(0, i)),
-            decodeURIComponent(item.slice(i + 1))
-          ]
-    })
-  )
-}
+let args = {};
 
-let title = 'NetSpeed'
-let content = ''
-let icon = ''
-let color = ''
+if (typeof $argument !== "undefined" && $argument) {
+  $argument.split("&").forEach(item => {
+    const i = item.indexOf("=");
+    if (i < 0) return;
 
-const BASE = 'https://speed.cloudflare.com'
-const MB = 1024 * 1024
+    const key = item.slice(0, i);
+    const value = item.slice(i + 1);
 
-// 测速参数：下载 70MB，上传 45MB
-const DOWN_SIZES = [10, 10, 25, 25]
-const UP_SIZES = [10, 10, 25]
-
-// 四舍五入
-function round(n, p = 0) {
-  const m = Math.pow(10, p)
-  return Math.round(n * m) / m
-}
-
-// 中位数
-function median(arr) {
-  const a = [...arr].sort((x, y) => x - y)
-  const mid = Math.floor(a.length / 2)
-  return a.length % 2
-    ? a[mid]
-    : (a[mid - 1] + a[mid]) / 2
-}
-
-// HTTP 请求
-async function request(method, url, body) {
-  const options = {
-    url,
-    timeout: 30
-  }
-
-  if (method === 'POST') {
-    options.body = body
-    options.headers = {
-      'Content-Type': 'application/octet-stream'
+    try {
+      args[decodeURIComponent(key)] =
+        decodeURIComponent(value);
+    } catch (_) {
+      args[key] = value;
     }
-    return await $.http.post(options)
-  }
-
-  return await $.http.get(options)
+  });
 }
 
-// 检查 HTTP 状态
-function checkResponse(res) {
-  const status = res?.statusCode || res?.status || 0
-  if (status < 200 || status >= 300) {
-    throw new Error(`HTTP 请求失败：${status || '无响应'}`)
-  }
+const title = args.title || "NetSpeed";
+
+function round(n, p = 2) {
+  const m = Math.pow(10, p);
+  return Math.round(n * m) / m;
 }
 
-// 单次延迟测试
+function median(arr) {
+  const sorted = [...arr].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+
+  return sorted.length % 2
+    ? sorted[mid]
+    : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function httpRequest(method, url, body) {
+  return new Promise((resolve, reject) => {
+    const options = {
+      url,
+      timeout: 60,
+      headers: {
+        "Cache-Control": "no-cache"
+      }
+    };
+
+    if (method === "POST") {
+      options.body = body;
+      options.headers["Content-Type"] =
+        "application/octet-stream";
+    }
+
+    const callback = (error, response, data) => {
+      if (error) {
+        reject(new Error(String(error)));
+        return;
+      }
+
+      if (!response) {
+        reject(new Error("服务器没有返回响应"));
+        return;
+      }
+
+      const status =
+        response.statusCode || response.status || 0;
+
+      if (status < 200 || status >= 300) {
+        reject(new Error("HTTP错误：" + status));
+        return;
+      }
+
+      resolve({
+        response,
+        data
+      });
+    };
+
+    if (method === "POST") {
+      $httpClient.post(options, callback);
+    } else {
+      $httpClient.get(options, callback);
+    }
+  });
+}
+
+// 延迟测试
 async function testPing() {
-  const times = []
+  const samples = [];
 
   for (let i = 0; i < 5; i++) {
-    const start = Date.now()
+    const url =
+      BASE + "/__down?bytes=0&measId=" +
+      Date.now() + "-" + i;
 
-    const res = await request(
-      'GET',
-      `${BASE}/__down?bytes=0&measId=${Date.now()}-${i}`
-    )
+    const start = Date.now();
 
-    checkResponse(res)
-    times.push(Date.now() - start)
+    await httpRequest("GET", url);
+
+    samples.push(Date.now() - start);
+  }
+
+  const ping = median(samples);
+
+  let jitterTotal = 0;
+
+  for (let i = 1; i < samples.length; i++) {
+    jitterTotal += Math.abs(
+      samples[i] - samples[i - 1]
+    );
   }
 
   return {
-    ping: median(times),
-    jitter: times.length > 1
-      ? times.slice(1).reduce(
-          (sum, v, i) => sum + Math.abs(v - times[i]), 0
-        ) / (times.length - 1)
-      : 0
-  }
+    ping,
+    jitter: jitterTotal / (samples.length - 1),
+    samples
+  };
 }
 
-// 下载测速
+// 下载测试
 async function testDownload() {
-  let totalBytes = 0
-  let totalTime = 0
-  const samples = []
+  const sizes = [16, 24, 32];
 
-  for (let i = 0; i < DOWN_SIZES.length; i++) {
-    const size = DOWN_SIZES[i] * MB
+  let totalBytes = 0;
+  let totalTime = 0;
+  const samples = [];
+
+  for (let i = 0; i < sizes.length; i++) {
+    const bytes = sizes[i] * MB;
+
     const url =
-      `${BASE}/__down?bytes=${size}&measId=${Date.now()}-${i}`
+      BASE + "/__down?bytes=" + bytes +
+      "&measId=" + Date.now() + "-" + i;
 
-    const start = Date.now()
-    const res = await request('GET', url)
-    checkResponse(res)
+    const start = Date.now();
 
-    const duration = (Date.now() - start) / 1000
+    let result = await httpRequest("GET", url);
 
-    if (duration <= 0) continue
+    const duration = (Date.now() - start) / 1000;
 
-    const speed = size * 8 / duration / 1000000
+    if (duration <= 0) {
+      throw new Error("下载计时异常");
+    }
 
-    samples.push(speed)
-    totalBytes += size
-    totalTime += duration
+    totalBytes += bytes;
+    totalTime += duration;
 
-    // 释放响应引用
-    res.body = null
-  }
+    samples.push(
+      round(bytes * 8 / duration / 1000000)
+    );
 
-  if (!totalTime) {
-    throw new Error('下载测速没有获得有效数据')
+    // 释放响应数据
+    result.data = null;
+    result = null;
   }
 
   return {
     speed: totalBytes * 8 / totalTime / 1000000,
     samples
-  }
+  };
 }
 
-// 上传测速
+// 上传测试
 async function testUpload() {
-  let totalBytes = 0
-  let totalTime = 0
-  const samples = []
+  const sizes = [16, 32];
 
-  for (let i = 0; i < UP_SIZES.length; i++) {
-    const size = UP_SIZES[i] * MB
+  let totalBytes = 0;
+  let totalTime = 0;
+  const samples = [];
 
-    // 生成实际上传数据
-    const payload = '0'.repeat(size)
+  // ASCII数据，避免UTF-8多字节长度误差
+  const pattern = "0123456789abcdef".repeat(65536);
+
+  for (let i = 0; i < sizes.length; i++) {
+    const bytes = sizes[i] * MB;
+
+    const payload = pattern.repeat(
+      Math.ceil(bytes / pattern.length)
+    ).slice(0, bytes);
 
     const url =
-      `${BASE}/__up?measId=${Date.now()}-${i}`
+      BASE + "/__up?measId=" +
+      Date.now() + "-" + i;
 
-    const start = Date.now()
-    const res = await request('POST', url, payload)
-    checkResponse(res)
+    const start = Date.now();
 
-    const duration = (Date.now() - start) / 1000
+    let result = await httpRequest(
+      "POST",
+      url,
+      payload
+    );
 
-    if (duration <= 0) continue
+    const duration = (Date.now() - start) / 1000;
 
-    const speed = size * 8 / duration / 1000000
+    if (duration <= 0) {
+      throw new Error("上传计时异常");
+    }
 
-    samples.push(speed)
-    totalBytes += size
-    totalTime += duration
+    totalBytes += bytes;
+    totalTime += duration;
 
-    res.body = null
-  }
+    samples.push(
+      round(bytes * 8 / duration / 1000000)
+    );
 
-  if (!totalTime) {
-    throw new Error('上传测速没有获得有效数据')
+    result.data = null;
+    result = null;
   }
 
   return {
     speed: totalBytes * 8 / totalTime / 1000000,
     samples
-  }
+  };
 }
 
-// 图标与颜色
-function setAppearance(download, ping) {
-  const iconKey =
-    download < 80 ? 'iconslow' :
-    download < 120 ? 'iconmid' : 'iconfast'
+// 图标设置
+function getIcon(speed) {
+  if (speed < 80) {
+    return args.iconslow || "tortoise";
+  }
 
-  const colorKey =
-    ping < 150 ? 'colorlow' :
-    ping < 300 ? 'colormid' : 'colorhigh'
+  if (speed < 120) {
+    return args.iconmid || "hare";
+  }
 
-  icon = arg[iconKey] || ''
-  color = arg[colorKey] || ''
+  return args.iconfast || "bolt";
+}
+
+// 颜色设置
+function getColor(ping) {
+  if (ping < 150) {
+    return args.colorlow || "#06D6A0";
+  }
+
+  if (ping < 300) {
+    return args.colormid || "#FFD166";
+  }
+
+  return args.colorhigh || "#EF476F";
 }
 
 // 主程序
-;(async () => {
-  const startTime = Date.now()
+(async () => {
+  const startTime = Date.now();
 
-  // 1. 延迟
-  const latency = await testPing()
-
-  // 2. 下载
-  const down = await testDownload()
-
-  // 3. 上传
-  let upSpeed = null
-  let upError = ''
+  let down;
+  let up;
+  let latency;
 
   try {
-    const up = await testUpload()
-    upSpeed = up.speed
+    // 1. 延迟
+    latency = await testPing();
+
+    // 2. 下载
+    down = await testDownload();
+
+    // 3. 上传
+    up = await testUpload();
+
+    const download = round(down.speed);
+    const upload = round(up.speed);
+
+    const ping = round(latency.ping, 1);
+    const jitter = round(latency.jitter, 1);
+
+    const elapsed = round(
+      (Date.now() - startTime) / 1000,
+      1
+    );
+
+    const icon = getIcon(download);
+    const color = getColor(ping);
+
+    const content =
+      "↓ 下载速度：" + download +
+      " Mbps [" + round(download / 8) + " MB/s]\n" +
+
+      "↑ 上传速度：" + upload +
+      " Mbps [" + round(upload / 8) + " MB/s]\n" +
+
+      "网络延迟：" + ping + " ms\n" +
+
+      "网络抖动：" + jitter + " ms\n" +
+
+      "下载样本：" + down.samples.join(" / ") +
+      " Mbps\n" +
+
+      "上传样本：" + up.samples.join(" / ") +
+      " Mbps\n" +
+
+      "测速耗时：" + elapsed + " s\n" +
+
+      "执行时间：" +
+      new Date().toTimeString().split(" ")[0];
+
+    console.log(content);
+
+    $done({
+      title,
+      content,
+      icon,
+      "icon-color": color
+    });
+
   } catch (e) {
-    upError = e.message || String(e)
+    console.log("NetSpeed Error:", e);
+
+    $done({
+      title: "❌ " + title,
+      content:
+        "测速失败：" +
+        (e.message || String(e)),
+      icon: "xmark",
+      "icon-color": "#EF476F"
+    });
   }
-
-  const download = round(down.speed, 2)
-  const upload = upSpeed === null ? null : round(upSpeed, 2)
-  const ping = round(latency.ping)
-  const jitter = round(latency.jitter, 1)
-
-  setAppearance(download, ping)
-
-  const downMB = download / 8
-  const upMB = upload === null ? null : upload / 8
-
-  title = 'NetSpeed'
-
-  content =
-    `↓ 下载速度：${download} Mbps [${round(downMB, 2)} MB/s]\n` +
-    `↑ 上传速度：${upload === null ? '测试失败' : `${upload} Mbps [${round(upMB, 2)} MB/s]`}\n` +
-    `网络延迟：${ping} ms\n` +
-    `网络抖动：${jitter} ms\n` +
-    `下载样本：${DOWN_SIZES.join(' + ')} MB\n` +
-    `上传样本：${UP_SIZES.join(' + ')} MB\n` +
-    `测速耗时：${round((Date.now() - startTime) / 1000, 1)} s` +
-    (upError ? `\n上传错误：${upError}` : '')
-
-  if (arg.notify) {
-    await notify('网络速率', title, content)
-  }
-
-})()
-.catch(async e => {
-  title = '❌ 网络测速失败'
-  content = e.message || String(e)
-
-  if (arg.notify) {
-    await notify('网络速率', title, content)
-  }
-
-  $.logErr(e)
-})
-.finally(() => {
-  const result = {
-    title,
-    content,
-    icon,
-    'icon-color': color,
-    ...arg
-  }
-
-  $.log($.toStr(result))
-  $.done(result)
-})
-
-// 通知
-async function notify(title, subt, desc, opts) {
-  if (arg.notify) {
-    $.msg(title, subt, desc, opts)
-  }
-}
+})();
