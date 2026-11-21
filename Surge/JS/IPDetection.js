@@ -34,8 +34,12 @@ const CFG = {
 
 let finished = false;
 
-const PANEL_TITLE = "IP 检测";
+const PANEL_TITLE =
 
+  typeof $input !== "undefined" && $input.panelName
+    ? $input.panelName
+    : "IP 信息";
+    
 // 读取模块参数
 function parseArguments(raw) {
   const result = {};
