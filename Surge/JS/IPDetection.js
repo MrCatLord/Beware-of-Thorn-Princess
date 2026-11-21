@@ -1,291 +1,233 @@
+
 /**
- * Surge Panel 节点检测脚本
- * 实现：入口（中转）、落地、纯净度、IP 类型
+ * Surge IP 检测面板
+ * 功能：
+ * 1. IP 类型及纯净度
+ * 2. 入口 IP（中转）、地区、运营商
+ * 3. 落地 IP、地区、运营商
+ * Surge iOS 6
  */
 
-const TIMEOUT_MS = 10000;
-const args = parseArgs(typeof $argument !== "undefined" ? $argument : "");
-const panelTitle = args.title || "IP Check";
+const CONFIG = {
+  timeout: 12000,
+  ipAPI: "https://api.ipify.org?format=json",
+  pureAPI: "https://my.ippure.com/v1/info",
+  geoAPI: "http://ip-api.com/json/",
+  infoAPI: "https://ipinfo.io/",
+};
 
-let doneCalled = false;
-function finish(obj) {
-  if (doneCalled) return;
-  doneCalled = true;
-  $done(obj);
+// HTTP 请求
+function request(url, timeout = CONFIG.timeout) {
+  return new Promise(resolve => {
+    $httpClient.get({
+      url,
+      timeout,
+      headers: {
+        "User-Agent": "Surge IP Check"
+      }
+    }, (error, response, body) => {
+      if (error || !response || response.status < 200 ||
+          response.status >= 300) {
+        resolve(null);
+        return;
+      }
+      resolve(body || null);
+    });
+  });
 }
 
-const watchdog = typeof setTimeout === "function"
-  ? setTimeout(() => {
-      finish({
-        title: panelTitle,
-        content: [
-          "入口: 检测超时",
-          "落地: 检测超时",
-          "纯净度: 未知",
-          "IP 类型: 未知"
-        ].join("\n"),
-        icon: "exclamationmark.shield.fill",
-        "icon-color": "#FF3B30"
-      });
-    }, TIMEOUT_MS)
-  : null;
-
-function done(obj) {
-  if (watchdog && typeof clearTimeout === "function") clearTimeout(watchdog);
-  finish(obj);
-}
-
-!(async () => {
+// JSON 请求
+async function getJSON(url) {
+  const body = await request(url);
+  if (!body) return null;
   try {
-    // 1. 获取落地 IP
-    const outIP = await getOutboundIP();
-    if (!outIP) {
-      return done({
-        title: panelTitle,
-        content: [
-          "入口: 未知",
-          "落地: 获取失败",
-          "纯净度: 未知",
-          "IP 类型: 未知"
-        ].join("\n"),
-        icon: "xmark.shield.fill",
-        "icon-color": "#FF3B30"
-      });
-    }
-
-    // 2. 并行检测落地归属、IP 类型、纯净度
-    const [outGeoRes, typeRes, riskRes] = await Promise.allSettled([
-      getGeo(outIP),
-      getIPType(outIP),
-      getRiskScore(outIP)
-    ]);
-
-    const outGeo = outGeoRes.status === "fulfilled" ? outGeoRes.value : null;
-    const ipTypeInfo = typeRes.status === "fulfilled"
-      ? typeRes.value
-      : { ipType: "未知", ipSrc: "未知" };
-    const risk = riskRes.status === "fulfilled"
-      ? riskRes.value
-      : { score: null, source: "未知" };
-
-    // 3. 尝试从 Surge 最近请求获取入口（中转）IP，并查其归属（若与落地不同）
-    const entryIP = await getEntryIPWithRetry();
-    let entryGeo = null;
-    if (entryIP && entryIP !== outIP) {
-      entryGeo = await getGeo(entryIP);
-    }
-
-    // 4. 拼接四项展示文本
-    const entryLoc = entryGeo ? [entryGeo.country, entryGeo.city, entryGeo.isp].filter(Boolean).join(" ") : "";
-    const entryText = entryIP
-      ? (entryLoc ? `${entryIP} (${entryLoc})` : entryIP)
-      : "未检测到";
-
-    const outLoc = outGeo ? [outGeo.country, outGeo.city].filter(Boolean).join(" ") : "";
-    const exitText = outLoc ? `${outIP} (${outLoc})` : outIP;
-
-    const purityText = risk.score !== null && risk.score !== undefined
-      ? `${risk.score}% ${riskLabel(risk.score)} (${risk.source})`
-      : "未知";
-
-    const typeText = `${ipTypeInfo.ipType} | ${ipTypeInfo.ipSrc}`;
-
-    const style = pickStyle(risk.score, ipTypeInfo.ipType);
-
-    done({
-      title: panelTitle,
-      content: [
-        `入口: ${entryText}`,
-        `落地: ${exitText}`,
-        `纯净度: ${purityText}`,
-        `IP 类型: ${typeText}`
-      ].join("\n"),
-      icon: style.icon,
-      "icon-color": style.color
-    });
-  } catch (err) {
-    const msg = err && err.message ? err.message : String(err || "未知错误");
-    done({
-      title: panelTitle,
-      content: [
-        `入口: 异常`,
-        `落地: 异常 (${msg})`,
-        `纯净度: 未知`,
-        `IP 类型: 未知`
-      ].join("\n"),
-      icon: "xmark.shield.fill",
-      "icon-color": "#FF3B30"
-    });
-  }
-})();
-
-// --- 入口（中转）获取（带短暂重试，提高命中 recent 记录的概率）---
-async function getEntryIPWithRetry() {
-  if (typeof $httpAPI !== "function") return null;
-  const targetPattern = /(1\.1\.1\.1|ip\.sb|ip-api\.com|ippure\.com|proxycheck\.io)/i;
-
-  const findEntry = async (limit) => {
-    const res = await httpAPI("GET", "/v1/requests/recent");
-    const list = Array.isArray(res?.requests) ? res.requests.slice(0, limit) : [];
-    const hit = list.find(item => item && targetPattern.test(item.URL || ""));
-    if (hit && typeof hit.remoteAddress === "string" && /\(Proxy\)/.test(hit.remoteAddress)) {
-      const ip = hit.remoteAddress.replace(/\s*\(Proxy\)\s*/, "").replace(/:\d+$/, "").trim();
-      return ip || null;
-    }
+    return JSON.parse(body);
+  } catch {
     return null;
-  };
-
-  let ip = await findEntry(50);
-  if (ip) return ip;
-
-  await sleep(400);
-  ip = await findEntry(80);
-  return ip || null;
+  }
 }
 
-// --- 落地 IP 获取 ---
+// 获取落地 IP
 async function getOutboundIP() {
-  const trace = await httpGet("https://1.1.1.1/cdn-cgi/trace", 5);
-  if (trace) {
-    const match = trace.match(/^ip=(.+)$/m);
-    if (match && match[1]) return match[1].trim();
-  }
-  const sb = await httpGetJSON("https://api-ipv4.ip.sb/geoip", 5);
-  return sb?.ip ? String(sb.ip).trim() : null;
+  const data = await getJSON(CONFIG.ipAPI);
+  return data?.ip || null;
 }
 
-// --- IP 归属查询 ---
+// 获取 IP 地区
 async function getGeo(ip) {
-  const encoded = encodeURIComponent(ip);
-  const api = await httpGetJSON(`http://ip-api.com/json/${encoded}?lang=zh-CN&fields=status,country,city,isp`, 5);
-  if (api && api.status === "success") {
-    return {
-      country: api.country || "",
-      city: api.city || "",
-      isp: api.isp || ""
-    };
-  }
-  const sb = await httpGetJSON(`https://api.ip.sb/geoip/${encoded}`, 5);
-  if (sb && sb.ip) {
-    return {
-      country: sb.country || sb.country_code || "",
-      city: sb.city || "",
-      isp: sb.organization || ""
-    };
-  }
-  return null;
+  if (!ip) return null;
+
+  const [geo, info] = await Promise.all([
+    getJSON(CONFIG.geoAPI + encodeURIComponent(ip) +
+      "?fields=status,country,regionName,city,isp,org,as"),
+    getJSON(CONFIG.infoAPI + encodeURIComponent(ip) + "/json")
+  ]);
+
+  if (geo?.status !== "success" && !info) return null;
+
+  return {
+    country: geo?.country || info?.country || "",
+    region: geo?.regionName || "",
+    city: geo?.city || "",
+    isp: info?.org || geo?.isp || geo?.org || "",
+    asn: info?.org || geo?.as || ""
+  };
 }
 
-// --- IP 类型检测 ---
+// IP 类型与纯净度
 async function getIPType(ip) {
-  const pure = await httpGetJSON("https://my.ippure.com/v1/info", 6);
-  if (pure && typeof pure.isResidential === "boolean") {
+  const data = await getJSON(CONFIG.pureAPI);
+
+  if (!data) {
     return {
-      ipType: pure.isResidential ? "住宅 IP" : "机房 IP",
-      ipSrc: pure.isBroadcast ? "广播 IP" : "原生 IP"
+      type: "未知",
+      source: "未知",
+      score: null
     };
   }
-  const pc = await httpGetJSON(`https://proxycheck.io/v2/${encodeURIComponent(ip)}?risk=1&vpn=1`, 6);
-  const rawType = pc?.[ip]?.type;
-  if (rawType) {
+
+  // IPPure 检测结果必须与当前落地 IP 一致
+  if (data.ip && data.ip !== ip) {
     return {
-      ipType: /residential|wireless|mobile/i.test(rawType) ? "住宅 IP" : "机房 IP",
-      ipSrc: "未知"
+      type: "未知",
+      source: "未知",
+      score: null
     };
   }
-  return { ipType: "未知", ipSrc: "未知" };
+
+  const type = data.isResidential === undefined
+    ? "未知"
+    : data.isResidential ? "住宅 IP" : "机房 IP";
+
+  const source = data.isBroadcast === undefined
+    ? "未知"
+    : data.isBroadcast ? "广播 IP" : "原生 IP";
+
+  const score = Number.isFinite(Number(data.fraudScore))
+    ? Number(data.fraudScore)
+    : null;
+
+  return { type, source, score };
 }
 
-// --- 纯净度（风险分）检测 ---
-async function getRiskScore(ip) {
-  if (args.ipqs_key) {
-    const qs = await httpGetJSON(
-      `https://ipqualityscore.com/api/json/ip/${encodeURIComponent(args.ipqs_key)}/${encodeURIComponent(ip)}?strictness=1`,
-      6
-    );
-    if (qs && qs.success && typeof qs.fraud_score === "number") {
-      return { score: qs.fraud_score, source: "IPQS" };
-    }
-  }
-  const pc = await httpGetJSON(`https://proxycheck.io/v2/${encodeURIComponent(ip)}?risk=1&vpn=1`, 6);
-  if (pc && pc[ip] && typeof pc[ip].risk === "number") {
-    return { score: pc[ip].risk, source: "ProxyCheck" };
-  }
-  const pure = await httpGetJSON("https://my.ippure.com/v1/info", 6);
-  if (pure && typeof pure.fraudScore === "number") {
-    return { score: pure.fraudScore, source: "IPPure" };
-  }
-  return { score: null, source: "未知" };
-}
-
-function riskLabel(score) {
+// 风险等级
+function getRisk(score) {
+  if (score === null) return "暂无评分";
+  if (score <= 15) return "极度纯净";
   if (score <= 25) return "纯净";
+  if (score <= 40) return "一般";
   if (score <= 50) return "微风险";
   if (score <= 70) return "一般风险";
   return "高风险";
 }
 
-function pickStyle(score, ipType) {
-  if (score === null || score === undefined) {
-    return { icon: "shield.lefthalf.filled", color: "#9E9E9E" };
-  }
-  if (score <= 25) {
-    return { icon: "checkmark.shield.fill", color: "#34C759" };
-  }
-  if (score <= 50) {
-    return {
-      icon: ipType === "住宅 IP" ? "checkmark.shield.fill" : "shield.lefthalf.filled",
-      color: "#FFCC00"
-    };
-  }
-  return { icon: "exclamationmark.shield.fill", color: "#FF3B30" };
-}
-
-// --- 辅助工具 ---
-function sleep(ms) {
-  return typeof setTimeout === "function"
-    ? new Promise(resolve => setTimeout(resolve, ms))
-    : Promise.resolve();
-}
-
-function httpGet(url, timeoutSec = 5) {
+// 获取 Surge 入口 IP
+function getEntranceIP() {
   return new Promise(resolve => {
-    try {
-      $httpClient.get({ url, timeout: timeoutSec }, (err, resp, data) => {
-        if (err || !data) return resolve(null);
-        resolve(typeof data === "string" ? data : String(data));
+    $httpAPI("GET", "/v1/requests/recent", null, result => {
+      const requests = result?.requests || [];
+
+      // 找到本次 IP 查询请求
+      const hit = requests.find(item =>
+        /api\.ipify\.org/i.test(item.URL || "")
+      );
+
+      if (!hit || !hit.remoteAddress ||
+          !/\(Proxy\)/.test(hit.remoteAddress)) {
+        resolve(null);
+        return;
+      }
+
+      let address = hit.remoteAddress
+        .replace(/\s*\(Proxy\)\s*/, "")
+        .trim();
+
+      // 去除端口
+      if (address.startsWith("[")) {
+        address = address.replace(/^\[([^\]]+)\](?::\d+)?$/, "$1");
+      } else if ((address.match(/:/g) || []).length === 1) {
+        address = address.replace(/:\d+$/, "");
+      }
+
+      resolve(address || null);
+    });
+  });
+}
+
+// 面板输出
+function buildSection(title, ip, geo) {
+  return [
+    `【${title}】`,
+    `IP：${ip || "获取失败"}`,
+    `地区：${geo
+      ? [geo.country, geo.region, geo.city].filter(Boolean).join(" ")
+      : "未知"}`,
+    `运营商：${geo?.isp || "未知"}`
+  ].join("\n");
+}
+
+// 主程序
+(async () => {
+  try {
+    // 先获取落地 IP
+    const outboundIP = await getOutboundIP();
+
+    if (!outboundIP) {
+      $done({
+        title: "IP 检测失败",
+        content: "无法获取落地 IP，请检查网络或代理连接。"
       });
-    } catch (_) {
-      resolve(null);
+      return;
     }
-  });
-}
 
-async function httpGetJSON(url, timeoutSec = 5) {
-  const raw = await httpGet(url, timeoutSec);
-  if (!raw) return null;
-  try { return JSON.parse(raw); } catch (_) { return null; }
-}
+    // 并行查询检测数据
+    const [typeInfo, outboundGeo, entranceIP] =
+      await Promise.all([
+        getIPType(outboundIP),
+        getGeo(outboundIP),
+        getEntranceIP()
+      ]);
 
-function httpAPI(method, path) {
-  if (typeof $httpAPI !== "function") return Promise.resolve(null);
-  return new Promise(resolve => {
-    try {
-      $httpAPI(method, path, null, res => resolve(res || null));
-    } catch (_) {
-      resolve(null);
-    }
-  });
-}
+    // 查询入口 IP 地理信息
+    const entranceGeo = entranceIP
+      ? await getGeo(entranceIP)
+      : null;
 
-function parseArgs(str) {
-  const out = {};
-  if (!str || typeof str !== "string") return out;
-  str.split("&").forEach(pair => {
-    const idx = pair.indexOf("=");
-    if (idx > 0) {
-      out[pair.slice(0, idx).trim()] = decodeURIComponent(pair.slice(idx + 1).trim());
-    }
-  });
-  return out;
-}
+    // 纯净度
+    const risk = getRisk(typeInfo.score);
+
+    const scoreText = typeInfo.score === null
+      ? "暂无评分"
+      : `${typeInfo.score}% · ${risk}`;
+
+    const content = [
+      "【IP 类型与纯净度】",
+      `类型：${typeInfo.type}`,
+      `来源：${typeInfo.source}`,
+      `纯净度：${scoreText}`,
+      "",
+      buildSection("入口 IP（中转）", entranceIP, entranceGeo),
+      "",
+      buildSection("落地 IP（出口）", outboundIP, outboundGeo)
+    ].join("\n");
+
+    $done({
+      title: "IP 检测",
+      content,
+      icon: "network",
+      "icon-color": typeInfo.score === null
+        ? "#9E9E9E"
+        : typeInfo.score <= 25
+          ? "#30A46C"
+          : typeInfo.score <= 50
+            ? "#E5A000"
+            : "#E5484D"
+    });
+
+  } catch (error) {
+    $done({
+      title: "IP 检测异常",
+      content: String(error)
+    });
+  }
+})();
