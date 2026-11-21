@@ -36,10 +36,7 @@ const CFG = {
 let finished = false;
 
 const DEFAULT_TITLE = "IP信息";
-const args = new URLSearchParams(
-  typeof $argument !== "undefined" ? $argument : ""
-);
-const PANEL_TITLE = args.get("panel_title") || DEFAULT_TITLE;
+let PANEL_TITLE = DEFAULT_TITLE;
 
 // 读取模块参数
 function parseArguments(raw) {
@@ -64,6 +61,8 @@ function parseArguments(raw) {
 const args = parseArguments(
   typeof $argument === "string" ? $argument : ""
 );
+
+PANEL_TITLE = args.panel_title || DEFAULT_TITLE;
 
 CFG.icon = args.panel_icon || CFG.icon;
 CFG.iconColor = args.panel_color || CFG.iconColor;
