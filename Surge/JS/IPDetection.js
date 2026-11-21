@@ -37,7 +37,7 @@ let finished = false;
 const PANEL_TITLE =
   typeof $input !== "undefined" && $input.title
     ? $input.title
-    : "IP 信息";
+    : "𝑰𝑷 𝑪𝒉𝒆𝒄𝒌";
 
 // 读取模块参数
 function parseArguments(raw) {
