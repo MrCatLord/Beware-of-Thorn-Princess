@@ -1,221 +1,232 @@
 
-const BASE = "https://speed.cloudflare.com";
-const TIMEOUT = 120000;
+const CF = "https://speed.cloudflare.com";
+const PING_URL = "http://cp.cloudflare.com/generate_204";
 
-function percentile(values, p) {
-  if (!values.length) return 0;
-  const sorted = values.slice().sort((a, b) => a - b);
-  const index = Math.max(0, Math.ceil(p * sorted.length) - 1);
-  return sorted[index];
-}
+// Cloudflare 官方测速风格的下载阶梯
+const DOWNLOAD_STAGES = [
+  { bytes: 1e5, count: 9 },
+  { bytes: 1e6, count: 8 },
+  { bytes: 1e7, count: 6 },
+  { bytes: 2.5e7, count: 4 },
+  { bytes: 1e8, count: 3 },
+  { bytes: 2.5e8, count: 2 }
+];
 
 function median(values) {
-  return percentile(values, 0.5);
+  const a = values.slice().sort((x, y) => x - y);
+  const n = a.length;
+  if (!n) return 0;
+  if (n % 2) return a[(n - 1) / 2];
+  return (a[n / 2 - 1] + a[n / 2]) / 2;
 }
 
-function uniqueURL(path) {
-  return BASE + path + "&measId=" +
-    Date.now() + Math.random().toString(16).slice(2);
+function percentile(values, p) {
+  const a = values.slice().sort((x, y) => x - y);
+  if (!a.length) return 0;
+  return a[Math.max(0, Math.ceil(p * a.length) - 1)];
 }
 
-async function fetchWithTimeout(url, ms) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), ms);
+function makeURL(bytes) {
+  return CF + "/__down?bytes=" + bytes +
+    "&measId=" + Date.now() +
+    Math.random().toString(16).slice(2);
+}
 
-  try {
-    return await fetch(url, {
-      method: "GET",
-      cache: "no-store",
-      credentials: "omit",
-      signal: controller.signal
+// HTTP 204 延迟测试
+function pingOnce() {
+  return new Promise((resolve, reject) => {
+    const start = Date.now();
+
+    $httpClient.get({
+      url: PING_URL + "?ts=" + Date.now() +
+        Math.random().toString(16).slice(2),
+      timeout: 10,
+      headers: {
+        "Cache-Control": "no-cache"
+      }
+    }, (error, response) => {
+      if (error) {
+        reject(new Error("延迟请求失败：" + error));
+        return;
+      }
+
+      if (!response) {
+        reject(new Error("延迟服务器无响应"));
+        return;
+      }
+
+      const status = response.statusCode || response.status || 0;
+
+      if (status < 200 || status >= 300) {
+        reject(new Error("延迟接口 HTTP " + status));
+        return;
+      }
+
+      resolve(Date.now() - start);
     });
-  } finally {
-    clearTimeout(timer);
-  }
+  });
 }
 
 async function latencyTest() {
-  const values = [];
+  // 预热，不计入结果
+  await pingOnce();
 
-  for (let i = 0; i < 20; i++) {
-    const url = uniqueURL("/__down?bytes=0");
-    const start = performance.now();
+  const samples = [];
 
-    const response = await fetchWithTimeout(url, 15000);
-
-    const elapsed = performance.now() - start;
-
-    if (!response.ok) {
-      throw new Error("延迟测试 HTTP " + response.status);
-    }
-
-    await response.arrayBuffer();
-
-    const entries = performance.getEntriesByName(url);
-    const entry = entries.length ? entries[entries.length - 1] : null;
-
-    let ping = entry && entry.responseStart > 0
-      ? entry.responseStart - entry.requestStart
-      : elapsed;
-
-    if (ping > 0 && ping < 10000) {
-      values.push(ping);
-    }
+  for (let i = 0; i < 10; i++) {
+    samples.push(await pingOnce());
   }
 
-  if (values.length < 5) {
-    throw new Error("有效延迟样本不足");
-  }
-
-  return median(values);
+  return median(samples);
 }
 
-async function downloadOne(bytes) {
-  const url = uniqueURL("/__down?bytes=" + bytes);
-
+// 下载一个文件，利用 Resource Timing 计算传输时间
+async function downloadOnce(bytes) {
+  const url = makeURL(bytes);
   const start = performance.now();
-  const response = await fetchWithTimeout(url, 30000);
-  const headersTime = performance.now();
 
-  if (!response.ok) {
-    throw new Error("下载 HTTP " + response.status);
-  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 45000);
 
-  let received = 0;
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      cache: "no-store",
+      credentials: "omit",
+      mode: "cors",
+      signal: controller.signal
+    });
 
-  if (response.body && response.body.getReader) {
+    if (!response.ok) {
+      throw new Error("Cloudflare 下载 HTTP " + response.status);
+    }
+
+    if (!response.body || !response.body.getReader) {
+      throw new Error("当前 WebView 不支持流式下载");
+    }
+
     const reader = response.body.getReader();
+    let received = 0;
 
     while (true) {
       const result = await reader.read();
       if (result.done) break;
       received += result.value.byteLength;
     }
-  } else {
-    const buffer = await response.arrayBuffer();
-    received = buffer.byteLength;
+
+    const elapsed = performance.now() - start;
+
+    // 获取本次请求独立的 Resource Timing
+    const entries = performance.getEntriesByName(url, "resource");
+    const entry = entries.length
+      ? entries[entries.length - 1]
+      : null;
+
+    if (!entry || !entry.responseEnd || !entry.responseStart) {
+      throw new Error("无法取得 Cloudflare Resource Timing");
+    }
+
+    // 优先采用最终响应头时间，避免 1xx 响应影响计时
+    const headerStart =
+      entry.finalResponseHeadersStart > 0
+        ? entry.finalResponseHeadersStart
+        : entry.responseStart;
+
+    const duration = entry.responseEnd - headerStart;
+
+    if (duration <= 0 || received <= 0) {
+      throw new Error("下载计时数据无效");
+    }
+
+    // 优先采用 Resource Timing 的实际传输字节数
+    const transferBytes =
+      entry.transferSize > 0
+        ? entry.transferSize
+        : received;
+
+    return {
+      bps: transferBytes * 8 / (duration / 1000),
+      duration: duration,
+      received: received,
+      elapsed: elapsed
+    };
+
+  } finally {
+    clearTimeout(timer);
   }
-
-  const end = performance.now();
-
-  const entries = performance.getEntriesByName(url);
-  const entry = entries.length ? entries[entries.length - 1] : null;
-
-  let duration = entry &&
-    entry.responseStart > 0 &&
-    entry.responseEnd > entry.responseStart
-      ? entry.responseEnd - entry.responseStart
-      : end - headersTime;
-
-  if (duration <= 0) {
-    duration = end - start;
-  }
-
-  if (received <= 0 || duration <= 0) {
-    throw new Error("下载数据无效");
-  }
-
-  return {
-    bytes: received,
-    duration: duration,
-    bps: received * 8 / (duration / 1000)
-  };
 }
 
+// 多连接下载测速
 async function downloadTest() {
-  const stages = [
-    { bytes: 100000, count: 9 },
-    { bytes: 1000000, count: 8 },
-    { bytes: 10000000, count: 6 },
-    { bytes: 25000000, count: 4 },
-    { bytes: 100000000, count: 3 },
-    { bytes: 250000000, count: 2 }
-  ];
-
   const samples = [];
 
-  for (const stage of stages) {
+  for (const stage of DOWNLOAD_STAGES) {
     const batch = await Promise.all(
-      Array.from({ length: stage.count }, () =>
-        downloadOne(stage.bytes)
+      Array.from(
+        { length: stage.count },
+        () => downloadOnce(stage.bytes)
       )
     );
 
     for (const item of batch) {
-      if (item.duration >= 10) {
+      // 排除过短请求，避免计时误差
+      if (item.duration >= 10 && item.bps > 0) {
         samples.push(item.bps);
       }
     }
 
-    const durations = batch.map(x => x.duration);
-    const typicalDuration = median(durations);
+    if (!batch.length) {
+      throw new Error("下载样本为空");
+    }
 
-    // 达到 Cloudflare 默认的 1 秒请求时长门槛后停止扩大文件
+    // 与 Cloudflare 默认的 1000ms 阶梯终止门槛接近
+    const typicalDuration = median(
+      batch.map(item => item.duration)
+    );
+
     if (typicalDuration >= 1000) {
       break;
     }
   }
 
   if (!samples.length) {
-    throw new Error("没有获得有效下载样本");
+    throw new Error("没有获得有效下载速度样本");
   }
 
+  // 采用 90 百分位
   return percentile(samples, 0.9) / 1000000;
 }
 
 async function main() {
-  const start = performance.now();
+  const totalStart = Date.now();
 
   const ping = await latencyTest();
   const download = await downloadTest();
 
-  const total = (performance.now() - start) / 1000;
+  const totalTime = (Date.now() - totalStart) / 1000;
 
   return {
     title: "NetSpeed",
     content:
-      "下载：" + download.toFixed(2) + " Mbps\n" +
-      "延迟：" + ping.toFixed(1) + " ms\n" +
-      "耗时：" + total.toFixed(1) + " 秒",
-    icon: "bolt",
+      "下行速率：" + download.toFixed(2) + " Mbps\n" +
+      "网络延迟：" + ping.toFixed(1) + " ms\n" +
+      "测试耗时：" + totalTime.toFixed(1) + " 秒",
+    icon: "speedometer",
     "icon-color": "#06D6A0"
   };
 }
 
 (async () => {
-  let finished = false;
-
-  const watchdog = setTimeout(() => {
-    if (finished) return;
-    finished = true;
-
+  try {
+    const result = await main();
+    $done(result);
+  } catch (error) {
     $done({
       title: "NetSpeed",
-      content: "测速超时，请检查网络或 Cloudflare 接口",
+      content: "测速失败：\n" +
+        String(error.message || error),
       icon: "exclamationmark.triangle.fill",
       "icon-color": "#EF476F"
     });
-  }, TIMEOUT);
-
-  try {
-    const result = await main();
-
-    if (!finished) {
-      finished = true;
-      clearTimeout(watchdog);
-      $done(result);
-    }
-  } catch (error) {
-    if (!finished) {
-      finished = true;
-      clearTimeout(watchdog);
-
-      $done({
-        title: "NetSpeed",
-        content: "测速失败：\n" + String(error.message || error),
-        icon: "exclamationmark.triangle.fill",
-        "icon-color": "#EF476F"
-      });
-    }
   }
 })();
