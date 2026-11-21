@@ -1,13 +1,18 @@
 /**
- * Surge Panel 节点 IP 类型与纯净度检测脚本
- * 展示：落地 IP、地区/运营商(ASN)、IP 类型、纯净度/风险评级、更新时间
+ * Surge Panel 入口 + 落地 IP 类型与纯净度检测脚本
+ * 支持通过 $argument 配置国内入口中转信息（如 entry=上海入口 1.2.3.4）
  */
 
-const panelTitle = (typeof $argument !== "undefined" && parseArgs($argument).title) || "IP Purity";
+const args = parseArgs(typeof $argument !== "undefined" ? $argument : "");
+const panelTitle = args.title || "IP Purity";
+const configuredEntry = args.entry || ""; // 国内入口中转（可填 IP、城市或线路名称）
 
 !(async () => {
   try {
-    // 并发请求两个主流 IP 信息源，交叉判断类型与风险
+    // 1. 尝试获取代理策略/节点名称（若 Surge 环境暴露了相关上下文）
+    const policyName = detectPolicyName();
+
+    // 2. 并发查询落地 IP 信息
     const [ipApiRes, ipWhoisRes] = await Promise.allSettled([
       httpGetJson("http://ip-api.com/json/?fields=status,message,country,regionName,city,isp,org,as,hosting,query", 6),
       httpGetJson("https://ipwho.is/", 6)
@@ -21,10 +26,10 @@ const panelTitle = (typeof $argument !== "undefined" && parseArgs($argument).tit
       : null;
 
     if (!main && !backup) {
-      throw new Error("无法获取出口 IP 信息");
+      throw new Error("无法获取落地 IP 信息");
     }
 
-    const ip = (main && main.query) || (backup && backup.ip) || "未知";
+    const exitIp = (main && main.query) || (backup && backup.ip) || "未知";
     const country = (main && main.country) || (backup && backup.country) || "";
     const city = (main && main.city) || (backup && backup.city) || "";
     const loc = [country, city].filter(Boolean).join(" ") || "未知地区";
@@ -32,7 +37,14 @@ const panelTitle = (typeof $argument !== "undefined" && parseArgs($argument).tit
     const orgRaw = (main && (main.isp || main.org)) || (backup && backup.connection && backup.connection.isp) || "未知";
     const asn = (main && main.as) || (backup && backup.connection && backup.connection.asn ? `AS${backup.connection.asn}` : "");
 
-    // 判断 IP 类型（机房/托管 Hosting vs 住宅/宽带 ISP/Mobile）
+    // 3. 确定“入口”显示文本（优先用 argument 传入的 entry；否则提示未配置或显示策略名）
+    const entryDisplay = configuredEntry
+      ? configuredEntry
+      : policyName
+        ? `未填入口 (策略: ${policyName})`
+        : "未配置 (可在参数填 entry)";
+
+    // 4. 判断落地 IP 类型（机房/托管 vs 住宅/宽带）
     const isHosting = Boolean(
       (main && main.hosting === true) ||
       (backup && backup.connection && (backup.connection.type === "hosting" || backup.connection.type === "datacenter")) ||
@@ -40,11 +52,9 @@ const panelTitle = (typeof $argument !== "undefined" && parseArgs($argument).tit
     );
 
     const ipType = isHosting ? "机房 / 托管 (Hosting)" : "住宅 / 宽带 (ISP)";
-
-    // 评估纯净度（基于托管属性与常见高风险 ASN/关键词做启发式分级）
     const purity = evaluatePurity({ isHosting, orgRaw, asn });
 
-    // 图标与颜色：纯净/住宅偏绿，机房/高风险偏黄或红
+    // 5. 图标与颜色
     let iconName = "checkmark.shield.fill";
     let iconColor = "#34C759";
     if (purity.level === "high_risk") {
@@ -57,7 +67,8 @@ const panelTitle = (typeof $argument !== "undefined" && parseArgs($argument).tit
 
     const timeStr = formatTime(new Date());
     const content = [
-      `落地 IP: ${ip} (${loc})`,
+      `入口中转: ${entryDisplay}`,
+      `落地 IP: ${exitIp} (${loc})`,
       `所属网络: ${orgRaw}${asn ? ` [${asn}]` : ""}`,
       `IP 类型: ${ipType}`,
       `纯净度: ${purity.label} (${purity.detail})`,
@@ -81,30 +92,27 @@ const panelTitle = (typeof $argument !== "undefined" && parseArgs($argument).tit
   }
 })();
 
+function detectPolicyName() {
+  try {
+    if (typeof $environment !== "undefined" && $environment) {
+      return $environment.policy || $environment.proxy || "";
+    }
+  } catch (_) {}
+  return "";
+}
+
 function evaluatePurity({ isHosting, orgRaw, asn }) {
   const text = `${orgRaw} ${asn}`.toLowerCase();
   const highRiskKeywords = ["vpn", "proxy", "tor", "hosting", "datacenter", "colocation", "m247", "tzulo", "zenlayer", "datapacket"];
   const hitHigh = highRiskKeywords.some((k) => text.includes(k));
 
   if (!isHosting && !hitHigh) {
-    return {
-      level: "clean",
-      label: "较高",
-      detail: "非明显机房段"
-    };
+    return { level: "clean", label: "较高", detail: "非明显机房段" };
   }
   if (hitHigh && isHosting) {
-    return {
-      level: "medium_risk",
-      label: "一般",
-      detail: "机房/代理特征明显"
-    };
+    return { level: "medium_risk", label: "一般", detail: "机房/代理特征明显" };
   }
-  return {
-    level: "medium_risk",
-    label: "中等",
-    detail: "数据中心/托管 IP"
-  };
+  return { level: "medium_risk", label: "中等", detail: "数据中心/托管 IP" };
 }
 
 function httpGetJson(url, timeoutSec = 6) {
