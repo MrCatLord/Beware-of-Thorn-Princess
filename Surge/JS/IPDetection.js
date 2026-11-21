@@ -66,7 +66,7 @@ const args = parseArguments(
 CFG.icon = args.panel_icon || CFG.icon;
 CFG.iconColor = args.panel_color || CFG.iconColor;
 
-// 统一结束
+// 统一结束面板
 function finish(content, isError) {
   if (finished) return;
 
@@ -121,7 +121,7 @@ async function getJSON(url) {
   }
 }
 
-// IP 校验
+// IPv4 / IPv6 校验
 function validIP(value) {
   if (typeof value !== "string") return false;
 
@@ -202,7 +202,7 @@ async function getOutboundSources() {
   };
 }
 
-// IPPure 必须与出口 IP 一致
+// IPPure 数据必须匹配当前出口 IP
 function pureMatchesIP(pure, ip) {
   return !!(
     pure &&
@@ -347,7 +347,7 @@ function getIPType(pureData, proxyData) {
   return { type, source };
 }
 
-// 多源评分
+// 多源综合风险评分
 function calculateRisk(results) {
   const valid = results.filter(item =>
     item &&
@@ -399,23 +399,6 @@ function calculateRisk(results) {
   };
 }
 
-// 风险来源展示
-function formatRiskSources(results) {
-  const names = ["IPPure", "ProxyCheck", "Scamalytics"];
-
-  return names.map(name => {
-    const item = results.find(x => x && x.source === name);
-
-    if (!item) return `${name}：无结果`;
-
-    if (item.score === null || item.score === undefined) {
-      return `${name}：未提供评分`;
-    }
-
-    return `${name}：${item.score}`;
-  }).join("\n");
-}
-
 // 地区与运营商
 async function getGeo(ip) {
   if (!ip) return null;
@@ -450,7 +433,7 @@ async function getGeo(ip) {
   };
 }
 
-// 入口 IP
+// 入口 IP 识别
 function cleanRemoteIP(value) {
   if (!value || typeof value !== "string") return null;
 
@@ -507,6 +490,7 @@ function getEntranceIP() {
   });
 }
 
+// 地区格式
 function formatLocation(geo) {
   if (!geo) return "未知";
 
@@ -515,6 +499,7 @@ function formatLocation(geo) {
     .join(" · ") || "未知";
 }
 
+// IP 信息块
 function buildIPBlock(name, ip, geo) {
   return [
     `【${name}】`,
@@ -571,15 +556,12 @@ setTimeout(() => {
       ? await getGeo(entranceIP)
       : null;
 
+    // 最终展示：不显示风险数据源明细
     const content = [
       "【IP 类型与纯净度】",
       `类型：${type.type}`,
       `属性：${type.source}`,
       `纯净度：${risk.text}`,
-      `有效数据源：${riskResults.length} / 3`,
-      "",
-      "【风险数据源】",
-      formatRiskSources(riskResults),
       "",
       buildIPBlock("入口 IP", entranceIP, entranceGeo),
       "",
