@@ -943,12 +943,51 @@ return {};
 }
 }
 
+// 从一条请求记录里深挖所有可能表示“实际使用策略”的字段：
+// policyName / policy / finalPolicy 等直接字段优先，其余递归扫描键名带
+// policy / proxy / node 的字符串值（包括嵌套的策略组决策链）。
+function collectPolicyStrings(node, out, depth) {
+if (!node || depth > 4 || typeof node !== "object") return;
+if (Array.isArray(node)) {
+node.forEach(n => collectPolicyStrings(n, out, depth + 1));
+return;
+}
+for (const key of Object.keys(node)) {
+const v = node[key];
+if (typeof v === "string" && /policy|proxy|node/i.test(key)) out.push(v);
+else if (v && typeof v === "object") collectPolicyStrings(v, out, depth + 1);
+}
+}
+
+function extractPolicyCandidates(item) {
+const list = [];
+const push = v => {
+if (typeof v !== "string") return;
+const s = v.trim();
+if (!s || s.length > 120) return;
+if (s.includes("://") || /^(true|false)$/i.test(s) || /^\d+$/.test(s)) return;
+if (!list.includes(s)) list.push(s);
+};
+push(item?.policyName);
+if (typeof item?.policy === "string") push(item.policy);
+push(item?.policy?.name);
+push(item?.finalPolicy);
+push(item?.effectivePolicy);
+push(item?.selectedPolicy);
+push(item?.proxyName);
+push(item?.nodeName);
+const deep = [];
+collectPolicyStrings(item, deep, 0);
+deep.forEach(push);
+return list;
+}
+
 function pickEntranceFromRequests(requests, baseline) {
 // 基线多重集扣减：本轮开始前已存在的请求逐个扣掉，只统计本轮新增的。
 // 这样入口没变时新增请求照样计票，入口变了时旧入口不会滞留。
 const remaining = Object.assign({}, baseline || {});
 const counts = {};
-const policyCounts = {};
+const candidateMap = new Map();
 for (const item of requests) {
 if (!DETECTOR_PATTERN.test(item?.URL || "")) continue;
 const sig = requestSignature(item);
@@ -956,20 +995,25 @@ if (remaining[sig] > 0) {
 remaining[sig] -= 1;
 continue;
 }
-// 本轮新增探测请求实际使用的策略名（即当前节点/策略组），多数票为准
-const pname = item?.policyName || (typeof item?.policy === "string" ? item.policy : item?.policy?.name) || "";
-if (pname) policyCounts[pname] = (policyCounts[pname] || 0) + 1;
 const remote = item?.remoteAddress || "";
-if (!/\(Proxy\)/i.test(remote)) continue;
+const isProxy = /\(Proxy\)/i.test(remote);
+// 本轮新增探测请求的实际策略候选：走代理的请求权重更高（直连请求也会带策略名，避免喧宾夺主）
+const weight = isProxy ? 2 : 1;
+for (const name of extractPolicyCandidates(item)) {
+candidateMap.set(name, (candidateMap.get(name) || 0) + weight);
+}
+if (!isProxy) continue;
 const ip = cleanRemoteIP(remote);
 if (ip) counts[ip] = (counts[ip] || 0) + 1;
 }
 
-const policyGroups = Object.entries(policyCounts).sort((a, b) => b[1] - a[1]);
-const policyName = policyGroups.length ? policyGroups[0][0] : "";
+const candidates = Array.from(candidateMap.entries())
+.map(([name, votes]) => ({ name, votes }))
+.sort((a, b) => b.votes - a.votes);
+const policyName = candidates.length ? candidates[0].name : "";
 const groups = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-if (!groups.length) return { ip: null, distinct: 0, votes: 0, policyName: policyName };
-return { ip: groups[0][0], distinct: groups.length, votes: groups[0][1], policyName: policyName };
+if (!groups.length) return { ip: null, distinct: 0, votes: 0, policyName: policyName, candidates: candidates };
+return { ip: groups[0][0], distinct: groups.length, votes: groups[0][1], policyName: policyName, candidates: candidates };
 }
 
 
@@ -1099,11 +1143,67 @@ current = next;
 return current;
 }
 
+// 节点名最终裁决：候选来自本轮请求记录，再用 /v1/policies 的清单校验——
+// proxies 是真实节点名单、policy-groups 是组名单。候选本身已是真实节点就直接用；
+// 是组名才走 resolveNodeName 翻译，且翻译结果也要在真实节点名单里才采信，
+// 避免再把组名或接口错误值显示到面板上。
+async function resolveNodeFromCandidates(candidates) {
+if (!candidates || !candidates.length) return "";
+const policies = await httpAPIGet("/v1/policies");
+const proxies = new Set(Array.isArray(policies?.proxies) ? policies.proxies : []);
+const groups = new Set(Array.isArray(policies?.["policy-groups"]) ? policies["policy-groups"] : []);
+const hasLists = proxies.size > 0 || groups.size > 0;
+for (const c of candidates) {
+if (proxies.has(c.name) && !groups.has(c.name)) return c.name;
+}
+const resolvedList = [];
+for (const c of candidates) {
+const r = await resolveNodeName(c.name);
+if (r && !resolvedList.includes(r)) resolvedList.push(r);
+if (r && proxies.has(r) && !groups.has(r)) return r;
+}
+if (hasLists) {
+const nonGroup = resolvedList.find(r => !groups.has(r));
+if (nonGroup) return nonGroup;
+const nonGroupCandidate = candidates.find(c => !groups.has(c.name));
+if (nonGroupCandidate) return nonGroupCandidate.name;
+}
+return resolvedList[0] || candidates[0].name || "";
+}
+
 async function getEntranceIP(baseline) {
 let result = pickEntranceFromRequests(await queryRecentRequests(), baseline);
-if (result.ip) return result;
-await new Promise(resolve => setTimeout(resolve, 100));
-result = pickEntranceFromRequests(await queryRecentRequests(), baseline);
+// 请求记录写入有延迟：入口 IP 或策略候选任一缺失时，再等一会儿重读两次；
+// 仍无候选时，从正在进行的请求（/v1/requests/active）里补找策略候选。
+for (const wait of [150, 300]) {
+if (result.ip && result.candidates.length) break;
+await new Promise(resolve => setTimeout(resolve, wait));
+const next = pickEntranceFromRequests(await queryRecentRequests(), baseline);
+if (next.ip) result.ip = next.ip;
+if (next.candidates.length) {
+result.candidates = next.candidates;
+result.policyName = next.policyName;
+}
+}
+if (!result.candidates.length) {
+try {
+const active = await httpAPIGet("/v1/requests/active");
+const list = Array.isArray(active?.requests) ? active.requests : [];
+const map = new Map();
+for (const item of list) {
+if (!DETECTOR_PATTERN.test(item?.URL || "")) continue;
+for (const name of extractPolicyCandidates(item)) {
+map.set(name, (map.get(name) || 0) + 1);
+}
+}
+if (map.size) {
+result.candidates = Array.from(map.entries())
+.map(([name, votes]) => ({ name, votes }))
+.sort((a, b) => b.votes - a.votes);
+result.policyName = result.candidates[0].name;
+}
+} catch (e) {}
+}
 return result;
 }
 
@@ -1117,9 +1217,9 @@ return result;
 // 使所有行的值都从同一位置开始（按实测截图：值起点差 36px ≈ 3 个空格宽）。
 function buildIPBlock(name, ip, geo) {
 return [
-`${name}：${ip || "获取失败"}`,
-`IP地区：${formatLocation(geo)}`,
-`运营商：${geo?.isp || "未知"}`
+`${name} ：${ip || "获取失败"}`,
+`IP地区 ：${formatLocation(geo)}`,
+`运营商 :   ${geo?.isp || "未知"}`
 ].join("\n");
 }
 
@@ -1139,7 +1239,7 @@ const pureData = getIPPureData(outboundIP, sources.sources.pureData);
 const entrancePromise = (async () => {
 try {
 const ent = await getEntranceIP(entranceBaseline);
-const nodeName = await resolveNodeName(ent.policyName);
+const nodeName = await resolveNodeFromCandidates(ent.candidates);
 if (!ent.ip || ent.ip === outboundIP) return { ip: ent.ip, geo: null, nodeName: nodeName };
 return { ip: ent.ip, geo: await getGeo(ent.ip, []), nodeName: nodeName };
 } catch (e) {
@@ -1188,12 +1288,11 @@ const risk = calculateRisk(riskResults);
 const type = getIPType(pureData, proxyData, cleanData, outboundGeo?.flags);
 
 const content = [
-"",
 entranceResult.nodeName || "未知",
 "",
-`IP类型：${type.type}`,
-`IP属性：${type.attribute}`,
-`纯净度：${risk.text}`,
+`IP类型 ：${type.type}`,
+`IP属性 ：${type.attribute}`,
+`纯净度 :   ${risk.text}`,
 "",
 buildIPBlock("入口IP", entranceIP, entranceGeo),
 "",
