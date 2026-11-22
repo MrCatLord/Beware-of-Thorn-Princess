@@ -1,7 +1,7 @@
 /**
 * Surge iOS 6 - IP Detection
 * IP 类型 / 纯净度 / 入口 IP / 落地 IP
-*
+* 
 * 1. 多源出口 IP 探测与一致性交叉验证，CleanIP 参与投票；
 * 无多数分歧时用全新连接复测 IPPure + CF 定案（已弃用频繁失败的 ipwho.is）
 * 2. IPPure > ProxyCheck > Scamalytics 纯净度优先级，
@@ -18,9 +18,7 @@
 * 5. 入口 IP 在脚本启动时先等基线快照拍完再发探测，只对本轮新增请求投票，避免滞留上一轮入口；
 *    且与落地详情并发检测，不再串行等待
 * 6. 入口 IP 与落地 IP 相同时复用归属地结果，不重复查询
-* 7. 节点名：候选优先取自产生落地 IP 的出口探测请求本身，深挖请求记录里的
-*    全部策略字段（含嵌套决策链），再用 /v1/policies 的真实节点/策略组清单对账，
-*    外部订阅策略的 identifier 会先翻译回节点名；是组名才走组解析兜底
+* 7. 节点名：出口探测请求带本轮唯一标记，节点名只认带标记的请求记录
 */
 
 
@@ -322,10 +320,25 @@ votes: voteMap
 };
 }
 
+// 本轮唯一标记：拼到 IPPure / CF 两个探测请求的 URL 上。最近请求记录写入有
+// 延迟，上一轮的记录会迟到混进列表，且与本轮记录 URL 完全相同、无从分辨——
+// 这正是节点名总慢一拍的原因。带上每轮不同的标记后，只认带本轮标记的记录，
+// 迟到的旧记录再像也不是本轮的。
+let RUN_TAG = "";
+function ensureRunTag() {
+if (!RUN_TAG) {
+RUN_TAG = "rt" + Date.now().toString(36) + Math.floor(Math.random() * 1679616).toString(36);
+}
+return RUN_TAG;
+}
+function tagged(url) {
+return url + (url.includes("?") ? "&" : "?") + "v=" + ensureRunTag();
+}
+
 async function getOutboundSources() {
 const [pure, traceBody, sb, cleanRaw] = await Promise.all([
-getJSON(CFG.ippure),
-request(CFG.cfTrace),
+getJSON(tagged(CFG.ippure)),
+request(tagged(CFG.cfTrace)),
 getJSON(CFG.ipSB),
 getJSON(CFG.cleanIP + "?lang=zh", buildCleanIPHeaders())
 ]);
@@ -355,7 +368,7 @@ let verification = verifyOutboundConsistency(entries);
 // 无多数分歧（split）时，用全新连接复测 IPPure + CF 两个高可信源，合并投票定案，
 // 避免某一条探测被旧连接/旧路由带偏时把落地 IP 选错
 if (verification.consensus === "split") {
-const [pure2, traceBody2] = await Promise.all([getJSON(CFG.ippure), request(CFG.cfTrace)]);
+const [pure2, traceBody2] = await Promise.all([getJSON(tagged(CFG.ippure)), request(tagged(CFG.cfTrace))]);
 const trace2 = parseTrace(traceBody2);
 const extra = [
 { key: "pure", ip: normalizeIP(pure2?.ip) },
@@ -1524,6 +1537,42 @@ return [
 ].join("\n");
 }
 
+// 节点名（新实现）：只认带本轮标记的探测请求记录。标记是每轮随机生成的，
+// 出现在记录 URL 里即证明这条记录属于本轮——上一轮迟到刷入的记录没有本轮
+// 标记，再新也直接忽略，从根上杜绝节点名慢一拍。记录写入有延迟，轮询几次
+// 等它刷入（探测响应都已返回，记录通常在头两次读取内出现）；实在等不到
+// 才返回空，由调用方退回旧候选逻辑兜底。
+async function resolveCurrentNodeName() {
+const tag = ensureRunTag();
+const waits = [0, 200, 400, 700, 1000, 1200];
+for (let attempt = 0; attempt < waits.length; attempt++) {
+if (waits[attempt]) await new Promise(r => setTimeout(r, waits[attempt]));
+let list = await queryRecentRequests();
+if (attempt >= 2) {
+try {
+const active = await httpAPIGet("/v1/requests/active");
+if (Array.isArray(active?.requests)) list = list.concat(active.requests);
+} catch (e) {}
+}
+const taggedRecords = list.filter(item => (item?.URL || "").includes(tag));
+if (!taggedRecords.length) continue;
+const map = new Map();
+for (const item of taggedRecords) {
+const found = extractPolicyCandidates(item);
+const w = /\(Proxy\)/i.test(item?.remoteAddress || "") ? 2 : 1;
+for (const n of found.primary) map.set(n, (map.get(n) || 0) + w * 10);
+for (const n of found.extra) map.set(n, (map.get(n) || 0) + w);
+}
+const candidates = Array.from(map.entries())
+.map(([name, votes]) => ({ name, votes }))
+.sort((a, b) => b.votes - a.votes);
+dbg("本轮标记请求：" + taggedRecords.length + " 条");
+if (candidates.length) return await resolveNodeFromCandidates(candidates);
+}
+dbg("本轮标记请求：未找到，退回旧候选");
+return "";
+}
+
 // =====================================
 // 19. 总超时保护与主程序
 // =====================================
@@ -1539,8 +1588,14 @@ const pureData = getIPPureData(outboundIP, sources.sources.pureData);
 // 入口检测与下面的落地详情查询并发进行：入口记录在出口探测时已经产生，无需等全部查完
 const entrancePromise = (async () => {
 try {
-const ent = await getEntranceIP(entranceBaseline);
-const nodeName = await resolveNodeFromCandidates(ent.candidates);
+// 入口检测与节点名解析并发：节点名的标记记录轮询越早开始，越容易在记录
+// 刷入的第一时间抓到，不必排在入口检测后面白白消耗时间预算
+const [ent, taggedName] = await Promise.all([
+getEntranceIP(entranceBaseline),
+resolveCurrentNodeName()
+]);
+let nodeName = taggedName;
+if (!nodeName) nodeName = await resolveNodeFromCandidates(ent.candidates);
 if (!ent.ip || ent.ip === outboundIP) return { ip: ent.ip, geo: null, nodeName: nodeName };
 return { ip: ent.ip, geo: await getGeo(ent.ip, []), nodeName: nodeName };
 } catch (e) {
