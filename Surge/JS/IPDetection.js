@@ -5,14 +5,15 @@
 * 1. 多源出口 IP 探测与一致性交叉验证，CleanIP 参与投票，
 * 三/四源分歧（无多数）时用 ipwho.is 作决胜源再投一次
 * 2. IPPure > ProxyCheck > Scamalytics 纯净度优先级，
-* 面板标注评分来源，多源评分相差 >30 时标注「评分分歧」
+* 面板显示格式与原版完全一致，内部改进不增加显示项
 * 3. IP 类型引入 ip-api 的 mobile / proxy / hosting 强标志加权投票，
 * 再由 CleanIP + IPPure + ProxyCheck 交叉辅助判断
 * 4. 归属地按国家代码投票（不再用不同语言的字符串硬凑票数）：
 * - 中国：直辖市只显示直辖市；其他显示 省份 + 城市
 * - 香港 / 澳门 / 台湾：国家/地区名 + 下辖地区
 * - 其他国家：国家 + 州/省 + 城市
-* 5. 入口 IP 改为对最近代理请求投票，多个入口并存时给出提示
+* 5. 入口 IP 在脚本启动时拍基线快照，只对本轮新增的代理请求投票，避免滞留上一轮入口；
+*    且与落地详情并发检测，不再串行等待
 * 6. 入口 IP 与落地 IP 相同时复用归属地结果，不重复查询
 */
 
@@ -1018,6 +1019,18 @@ return result;
 // 18. 面板信息块
 // =====================================
 
+
+// Surge 面板正文是纯文本，没有字号/字重设置；用 Unicode 数学粗体字符模拟加粗效果
+// （英文字母和数字可转换，中文/符号无对应粗体码点，保持原样）
+function toBoldText(str) {
+return String(str || "").replace(/[A-Za-z0-9]/g, ch => {
+const c = ch.charCodeAt(0);
+if (c >= 65 && c <= 90) return String.fromCodePoint(0x1D5D4 + (c - 65));
+if (c >= 97 && c <= 122) return String.fromCodePoint(0x1D5EE + (c - 97));
+return String.fromCodePoint(0x1D7EC + (c - 48));
+});
+}
+
 function buildIPBlock(name, ip, geo) {
 return [
 `【${name}】`,
@@ -1092,7 +1105,8 @@ const risk = calculateRisk(riskResults);
 const type = getIPType(pureData, proxyData, cleanData, outboundGeo?.flags);
 
 const content = [
-`节点：${entranceResult.nodeName || "未知"}`,
+toBoldText(entranceResult.nodeName || "未知"),
+"",
 "【IP 信息】",
 `类型：${type.type}`,
 `属性：${type.attribute}`,
