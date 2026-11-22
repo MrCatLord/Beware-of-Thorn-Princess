@@ -1,15 +1,16 @@
 /**
-* Surge iOS 6 - IP Detection v3（完美版）
+* Surge iOS 6 - IP Detection
 * IP 类型 / 纯净度 / 入口 IP / 落地 IP
 *
-* v3 全局优化点：
 * 1. 多源出口 IP 探测与一致性交叉验证，CleanIP 参与投票；
 * 无多数分歧时用全新连接复测 IPPure + CF 定案（已弃用频繁失败的 ipwho.is）
 * 2. IPPure > ProxyCheck > Scamalytics 纯净度优先级，
 * 面板显示按用户指定版式，内部改进不增加显示项
 * 3. IP 类型引入 ip-api 的 mobile / proxy / hosting 强标志加权投票，
 * 再由 CleanIP + IPPure + ProxyCheck 交叉辅助判断
-* 4. 归属地：国家代码投票定国家，地名只从国家一致的来源记录里取（不再跨源拼凑）：
+* 4. 归属地：接入经真实 IP 实测挑选的来源阵容（ip-api + IPPure + ipquery +
+* ipapi.is + db-ip + geojs 为主，ipinfo 降为弱参考），加权投票定国家，
+* 地名只从国家一致的来源记录里取（不再跨源拼凑）：
 * - 中国：直辖市只显示直辖市；其他显示 省份 + 城市
 * - 香港 / 澳门 / 台湾：国家/地区名 + 下辖地区（泛称如 臺灣省 自动忽略）
 * - 其他国家：国家 + 州/省 + 城市，国家名以任何语言重复出现时自动去重
@@ -44,7 +45,11 @@ proxyCheck: "https://proxycheck.io/v2/",
 scamalytics: "https://scamalytics.com/ip/",
 
 geoAPI: "http://ip-api.com/json/",
-ipInfo: "https://ipinfo.io/"
+ipInfo: "https://ipinfo.io/",
+ipQuery: "https://api.ipquery.io/",
+ipapiIs: "https://api.ipapi.is/?ip=",
+dbip: "https://api.db-ip.com/v2/free/",
+geojs: "https://get.geojs.io/v1/ip/geo/"
 };
 
 const DEFAULT_TITLE = "IP信息";
@@ -718,6 +723,12 @@ if (MO_DISTRICTS[key]) return MO_DISTRICTS[key];
 return name.replace(/\s+(parish|district)$/i, "").replace(/堂区$/, "").replace(/区$/, "");
 }
 if (code === "TW") {
+const TW_CITIES_EN = {
+taipei: "台北", "new taipei": "新北", taoyuan: "桃园", taichung: "台中",
+tainan: "台南", kaohsiung: "高雄", keelung: "基隆", hsinchu: "新竹", chiayi: "嘉义"
+};
+const en = TW_CITIES_EN[name.toLowerCase()];
+if (en) return en;
 return name.replace(/\s+(county|city)$/i, "").replace(/县$/, "").replace(/市$/, "");
 }
 return name;
@@ -725,16 +736,19 @@ return name;
 
 // =====================================
 // 16. 多源归属地交叉验证
+// 来源阵容（均经真实 IP 实测挑选）：ip-api（中文名+类型标志）、IPPure（探测响应）、
+// ipquery、ipapi.is、db-ip、geojs（实测型，对中转/广播 IP 更准）、ipinfo（弱参考）、
+// CleanIP / ip.sb / CF（已抓数据兜底）。
 // 每个来源先整理成一条独立记录 {code, country, region, city, isp}；
 // 国家代码投票定下国家后，地名只从“国家一致”的记录里按优先级取，
 // 不再跨来源拼凑（杜绝 香港 + 臺灣省 这类混合结果）；显示时统一去重
 // （杜绝 新加坡 · North West · 新加坡 这类国家名重复）。
 // =====================================
 
-// 加权投票：IPPure 是实测出口的服务、权重最高（3）；ip-api 次之（2）；
-// ipinfo / CF 权重 1；CleanIP / ip.sb 只提供字段兜底、不参与国家投票（权重 0）——
-// 它们和 ipinfo 一样按号段注册地判定，中转节点的落地 IP 常被误判到注册国
-// （如 Kirino 的台湾出口被判香港），实测类来源必须能压过它们。
+// 加权投票：IPPure 是实测出口的服务、权重最高（3）；ip-api / ipquery / ipapi.is（2）；
+// db-ip / geojs / ipinfo / CF 权重 1；CleanIP / ip.sb 只提供字段兜底、不参与国家
+// 投票（权重 0）——按号段注册地判定的库会把中转节点的落地 IP 误判到注册国
+// （如 Kirino 的台湾出口被 ipinfo 判香港），实测类来源必须能压过它们。
 // 同分时由支持方里的最高权重决定。
 function voteCountryCode(records) {
 const tally = {};
@@ -758,8 +772,9 @@ if (s.includes(" or ")) s = s.split(" or ")[0].trim();
 return s;
 }
 
-// 各来源整理成统一记录；prio 越小优先级越高（ip-api 中文 > 已抓兜底 > ipinfo）
-function buildGeoRecords(a, b, fallbacks) {
+// 各来源整理成统一记录；prio 越小优先级越高：
+// ip-api（中文名）> 已抓兜底（IPPure 等）> ipquery > ipapi.is > db-ip > geojs > ipinfo
+function buildGeoRecords(a, b, extras, fallbacks) {
 const records = [];
 if (a?.status === "success") {
 records.push({
@@ -784,6 +799,9 @@ prio: 1,
 weight: typeof f.w === "number"? f.w: 1
 });
 }
+for (const r of extras || []) {
+if (r) records.push(r);
+}
 if (b) {
 records.push({
 code: String(b.country || "").toUpperCase(),
@@ -791,12 +809,13 @@ country: "",
 region: b.region || "",
 city: b.city || "",
 isp: b.org? String(b.org).replace(/^AS\d+\s*/i, ""): "",
-prio: 2,
+prio: 6,
 weight: 1
 });
 }
 return records;
 }
+
 
 const GEO_COUNTRY_NAMES = {
 CN: "中国", HK: "香港", MO: "澳门", TW: "台湾", SG: "新加坡",
@@ -818,21 +837,84 @@ IN: ["india"], TH: ["thailand"], VN: ["vietnam"], MY: ["malaysia"],
 ID: ["indonesia"], PH: ["philippines"], TR: ["turkey", "türkiye"]
 };
 
+// ipapi.is 只返回国家英文名，用别名表反查国家代码
+const EN_NAME_TO_CODE = {};
+for (const [code, names] of Object.entries(GEO_COUNTRY_ALIASES)) {
+for (const n of names) EN_NAME_TO_CODE[n] = code;
+}
+Object.assign(EN_NAME_TO_CODE, {
+china: "CN", "hong kong": "HK", taiwan: "TW", singapore: "SG", japan: "JP",
+"south korea": "KR", "united states": "US", "united kingdom": "GB"
+});
+
 async function getGeo(ip, fallbackGeos) {
 if (!ip) return null;
 const fallbacks = (fallbackGeos || []).filter(Boolean);
 
-const [a, b] = await Promise.all([
+const [a, b, ipq, iis, dbi, gjs] = await Promise.all([
 getJSON(
 CFG.geoAPI +
 encodeURIComponent(ip) +
 "?lang=zh-CN&fields=status,country,countryCode,city,regionName,isp,org,as,asname,mobile,proxy,hosting"
 ),
-getJSON(CFG.ipInfo + encodeURIComponent(ip) + "/json")
+getJSON(CFG.ipInfo + encodeURIComponent(ip) + "/json"),
+getJSON(CFG.ipQuery + encodeURIComponent(ip)),
+getJSON(CFG.ipapiIs + encodeURIComponent(ip)),
+getJSON(CFG.dbip + encodeURIComponent(ip)),
+getJSON(CFG.geojs + encodeURIComponent(ip) + ".json")
 ]);
 
+// 新增实测型来源（对中转/广播 IP 的实际使用地判定明显更准）：
+// ipquery（权重 2）、ipapi.is（权重 2）、db-ip（权重 1）、geojs（权重 1）
+const extras = [
+ipq?.location?.country_code
+? {
+code: String(ipq.location.country_code).toUpperCase(),
+country: ipq.location.country || "",
+region: ipq.location.state || "",
+city: ipq.location.city || "",
+isp: ipq.isp?.isp || ipq.isp?.org || "",
+prio: 2,
+weight: 2
+}
+: null,
+iis?.country
+? {
+code: EN_NAME_TO_CODE[String(iis.country).trim().toLowerCase()] || "",
+country: iis.country || "",
+region: iis.region || "",
+city: iis.city || "",
+isp: iis.company || iis.asn || "",
+prio: 3,
+weight: 2
+}
+: null,
+dbi?.countryCode
+? {
+code: String(dbi.countryCode).toUpperCase(),
+country: dbi.countryName || "",
+region: dbi.stateProv || "",
+city: dbi.city || "",
+isp: "",
+prio: 4,
+weight: 1
+}
+: null,
+gjs?.country_code
+? {
+code: String(gjs.country_code).toUpperCase(),
+country: gjs.country || "",
+region: gjs.region || "",
+city: gjs.city || "",
+isp: gjs.organization_name || "",
+prio: 5,
+weight: 1
+}
+: null
+];
+
 const apiOK = a?.status === "success";
-const records = buildGeoRecords(apiOK? a: null, b, fallbacks);
+const records = buildGeoRecords(apiOK? a: null, b, extras, fallbacks);
 if (!records.length) return null;
 
 // 国家：用代码加权投票，避免中英文字符串对不上
@@ -1398,9 +1480,9 @@ return result;
 // 使所有行的值都从同一位置开始（按实测截图：值起点差 36px ≈ 3 个空格宽）。
 function buildIPBlock(name, ip, geo) {
 return [
-`${name} ：${ip || "获取失败"}`,
-`IP地区 ：${formatLocation(geo)}`,
-`运营商 :   ${geo?.isp || "未知"}`
+`${name}：${ip || "获取失败"}`,
+`IP地区：${formatLocation(geo)}`,
+`运营商： ${geo?.isp || "未知"}`
 ].join("\n");
 }
 
@@ -1485,9 +1567,9 @@ const type = getIPType(pureData, proxyData, cleanData, outboundGeo?.flags);
 const content = [
 entranceResult.nodeName || "未知",
 "",
-`IP类型 ：${type.type}`,
-`IP属性 ：${type.attribute}`,
-`纯净度 :   ${risk.text}`,
+`IP类型：${type.type}`,
+`IP属性：${type.attribute}`,
+`纯净度： ${risk.text}`,
 "",
 buildIPBlock("入口IP", entranceIP, entranceGeo),
 "",
