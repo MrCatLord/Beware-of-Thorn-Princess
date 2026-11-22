@@ -4,7 +4,7 @@
 *
 * v3 全局优化点：
 * 1. 多源出口 IP 探测与一致性交叉验证，CleanIP 参与投票；
-* 无多数分歧时先用 ipwho.is 决胜，仍无多数再用全新连接复测 IPPure + CF 定案
+* 无多数分歧时用全新连接复测 IPPure + CF 定案（已弃用频繁失败的 ipwho.is）
 * 2. IPPure > ProxyCheck > Scamalytics 纯净度优先级，
 * 面板显示按用户指定版式，内部改进不增加显示项
 * 3. IP 类型引入 ip-api 的 mobile / proxy / hosting 强标志加权投票，
@@ -38,7 +38,6 @@ errorColor: "#EF476F",
 ippure: "https://my.ippure.com/v1/info",
 cfTrace: "https://1.1.1.1/cdn-cgi/trace",
 ipSB: "https://api-ipv4.ip.sb/geoip",
-ipWho: "https://ipwho.is/",
 
 cleanIP: "https://api.cleanip.io/api/v2/",
 proxyCheck: "https://proxycheck.io/v2/",
@@ -286,7 +285,7 @@ if (!validEntries.length) {
 return { ip: null, conflict: false, consensus: "none", count: 0, topCount: 0, votes: {}};
 }
 
-const sourceRank = { pure: 5, who: 4, cf: 3, sb: 2, clean: 1};
+const sourceRank = { pure: 5, cf: 3, sb: 2, clean: 1};
 const voteMap = {};
 
 for (const item of validEntries) {
@@ -347,18 +346,7 @@ let entries = [
 
 let verification = verifyOutboundConsistency(entries);
 
-// 无多数分歧（split）时，用 ipwho.is 作决胜源再投一次
-if (verification.consensus === "split") {
-const who = await getJSON(CFG.ipWho);
-const whoIP = normalizeIP(who?.ip);
-if (whoIP) {
-entries = entries.concat([{ key: "who", ip: whoIP}]);
-verification = verifyOutboundConsistency(entries);
-results.whoData = who;
-}
-}
-
-// 仍无多数时，用全新连接复测 IPPure + CF 两个高可信源，合并投票定案，
+// 无多数分歧（split）时，用全新连接复测 IPPure + CF 两个高可信源，合并投票定案，
 // 避免某一条探测被旧连接/旧路由带偏时把落地 IP 选错
 if (verification.consensus === "split") {
 const [pure2, traceBody2] = await Promise.all([getJSON(CFG.ippure), request(CFG.cfTrace)]);
@@ -650,7 +638,7 @@ function getMunicipality(value) {
 return MUNICIPALITIES[cleanAreaName(value).toLowerCase()] || "";
 }
 
-// 中国省份英文名 -> 中文名（ipinfo / ipwho 等英文源兜底用）
+// 中国省份英文名 -> 中文名（ipinfo 等英文源兜底用）
 const CN_PROVINCE_EN = {
 anhui: "安徽", fujian: "福建", gansu: "甘肃", guangdong: "广东", guizhou: "贵州",
 hainan: "海南", hebei: "河北", heilongjiang: "黑龙江", henan: "河南", hubei: "湖北",
@@ -743,16 +731,17 @@ return name;
 // （杜绝 新加坡 · North West · 新加坡 这类国家名重复）。
 // =====================================
 
-// 加权投票：IPPure 是实测出口的服务、权重最高；ip-api / ipwho / CF 次之；
-// ipinfo / CleanIP / ip.sb 这类按号段分配地判定的库权重最低——
-// 中转节点的落地 IP 常被它们误判到号段注册国（如 Kirino 的台湾出口被判香港）。
+// 加权投票：IPPure 是实测出口的服务、权重最高（3）；ip-api 次之（2）；
+// ipinfo / CF 权重 1；CleanIP / ip.sb 只提供字段兜底、不参与国家投票（权重 0）——
+// 它们和 ipinfo 一样按号段注册地判定，中转节点的落地 IP 常被误判到注册国
+// （如 Kirino 的台湾出口被判香港），实测类来源必须能压过它们。
 // 同分时由支持方里的最高权重决定。
 function voteCountryCode(records) {
 const tally = {};
 for (const r of records || []) {
 const c = String(r?.code || "").trim().toUpperCase();
 if (!/^[A-Z]{2}$/.test(c)) continue;
-const w = r.weight || 1;
+const w = typeof r.weight === "number"? r.weight: 1;
 if (!tally[c]) tally[c] = { score: 0, best: 0 };
 tally[c].score += w;
 if (w > tally[c].best) tally[c].best = w;
@@ -769,8 +758,8 @@ if (s.includes(" or ")) s = s.split(" or ")[0].trim();
 return s;
 }
 
-// 各来源整理成统一记录；prio 越小优先级越高（ip-api 中文 > 已抓兜底 > ipwho > ipinfo）
-function buildGeoRecords(a, b, who, fallbacks) {
+// 各来源整理成统一记录；prio 越小优先级越高（ip-api 中文 > 已抓兜底 > ipinfo）
+function buildGeoRecords(a, b, fallbacks) {
 const records = [];
 if (a?.status === "success") {
 records.push({
@@ -792,18 +781,7 @@ region: f.region || "",
 city: f.city || "",
 isp: f.isp || "",
 prio: 1,
-weight: f.w || 1
-});
-}
-if (who && who.success!== false && (who.ip || who.country_code)) {
-records.push({
-code: String(who.country_code || "").toUpperCase(),
-country: who.country || "",
-region: who.region || "",
-city: who.city || "",
-isp: who.connection?.isp || who.connection?.org || "",
-prio: 2,
-weight: 2
+weight: typeof f.w === "number"? f.w: 1
 });
 }
 if (b) {
@@ -813,7 +791,7 @@ country: "",
 region: b.region || "",
 city: b.city || "",
 isp: b.org? String(b.org).replace(/^AS\d+\s*/i, ""): "",
-prio: 3,
+prio: 2,
 weight: 1
 });
 }
@@ -844,18 +822,17 @@ async function getGeo(ip, fallbackGeos) {
 if (!ip) return null;
 const fallbacks = (fallbackGeos || []).filter(Boolean);
 
-const [a, b, who] = await Promise.all([
+const [a, b] = await Promise.all([
 getJSON(
 CFG.geoAPI +
 encodeURIComponent(ip) +
 "?lang=zh-CN&fields=status,country,countryCode,city,regionName,isp,org,as,asname,mobile,proxy,hosting"
 ),
-getJSON(CFG.ipInfo + encodeURIComponent(ip) + "/json"),
-getJSON(CFG.ipWho + encodeURIComponent(ip))
+getJSON(CFG.ipInfo + encodeURIComponent(ip) + "/json")
 ]);
 
 const apiOK = a?.status === "success";
-const records = buildGeoRecords(apiOK? a: null, b, who, fallbacks);
+const records = buildGeoRecords(apiOK? a: null, b, fallbacks);
 if (!records.length) return null;
 
 // 国家：用代码加权投票，避免中英文字符串对不上
@@ -1016,7 +993,7 @@ Array.isArray(result?.requests) ? result.requests : []
 }
 
 const DETECTOR_PATTERN =
-/(my\.ippure\.com|1\.1\.1\.1|api-ipv4\.ip\.sb|api\.cleanip\.io|ip-api\.com|ipinfo\.io|ipwho\.is|scamalytics\.com|proxycheck\.io)/i;
+/(my\.ippure\.com|1\.1\.1\.1|api-ipv4\.ip\.sb|api\.cleanip\.io|ip-api\.com|ipinfo\.io|scamalytics\.com|proxycheck\.io)/i;
 
 // 出口探测请求（真正产生落地 IP 的那四个）：节点名候选优先只认它们，
 // 保证显示的节点与落地 IP 出自同一批请求、同一个出口
@@ -1159,14 +1136,18 @@ if (typeof obj[f] === "string" && obj[f]) return obj[f];
 return null;
 }
 
-// 官方接口 $surge.selectGroupDetails()：decisions 里直接给出每个 select 策略组当前选中的策略
-function getSelectGroupDecisions() {
+// 官方接口 $surge.selectGroupDetails()：decisions 给出 select 组当前选中的策略，
+// groups 给出每个组的成员名单——后者用来校验前者：decisions 里的值若根本不是
+// 该组成员（实测出现过同名组串扰，把别的订阅的节点报成智能组的选择），直接拒绝。
+function getSelectGroupDetails() {
 try {
 if (typeof $surge !== "undefined" && $surge && typeof $surge.selectGroupDetails === "function") {
 const details = $surge.selectGroupDetails();
-if (details && details.decisions && typeof details.decisions === "object") {
-dbg("decisions：共 " + Object.keys(details.decisions).length + " 组");
-return details.decisions;
+if (details && typeof details === "object") {
+const decisions = details.decisions && typeof details.decisions === "object"? details.decisions: {};
+const groups = details.groups && typeof details.groups === "object"? details.groups: {};
+dbg("decisions：共 " + Object.keys(decisions).length + " 组");
+return { decisions, groups };
 }
 dbg("decisions：返回为空");
 return null;
@@ -1176,6 +1157,29 @@ dbg("decisions：接口不可用");
 dbg("decisions：调用异常");
 }
 return null;
+}
+
+// 从 /v1/policy_groups 提取每个组的成员名单（policies / availablePolicyNames 等数组字段）
+function buildGroupMembersMap(data) {
+const map = {};
+const visit = (node, keyHint) => {
+if (!node || typeof node !== "object") return;
+if (Array.isArray(node)) {
+node.forEach(item => visit(item, keyHint));
+return;
+}
+const name = typeof node.name === "string" && node.name ? node.name : (typeof node.group === "string" && node.group ? node.group : (keyHint || ""));
+for (const key of Object.keys(node)) {
+const v = node[key];
+if (Array.isArray(v) && v.length && v.every(x => typeof x === "string") && /polic|member|prox/i.test(key)) {
+if (name && !map[name]) map[name] = v.slice();
+} else if (v && typeof v === "object") {
+visit(v, key);
+}
+}
+};
+visit(data, "");
+return map;
 }
 
 // 深度遍历 /v1/policy_groups 的返回：不管外层包装键名是什么（policy-groups 等），
@@ -1221,9 +1225,6 @@ return;
 const name = typeof node.name === "string" ? node.name : (typeof node.group === "string" ? node.group : "");
 if (name === groupName) {
 found = firstStringField(node, SELECTED_FIELDS);
-if (!found && Array.isArray(node.availablePolicyNames) && node.availablePolicyNames.length) {
-found = String(node.availablePolicyNames[0] || "") || null;
-}
 if (found) return;
 }
 if (Object.prototype.hasOwnProperty.call(node, groupName)) {
@@ -1249,43 +1250,65 @@ if (!name) return "";
 if (name === "DIRECT") return "DIRECT（直连）";
 if (name === "REJECT" || name === "REJECT-DROP") return name;
 let current = name;
-const decisions = getSelectGroupDecisions();
-let groupMap = null;
+const details = getSelectGroupDetails();
+const decisions = details?.decisions || null;
+const sgGroups = details?.groups || {};
+const pgData = await httpAPIGet("/v1/policy_groups");
+const groupMap = buildGroupSelectedMap(pgData);
+const pgMembers = buildGroupMembersMap(pgData);
 let testResults = null;
 let testResultsLoaded = false;
+
+// 成员校验：任何来源给出的解析结果，必须是该组的真实成员才采信——
+// 实测同名组串扰会让 decisions 把别的订阅的节点报成智能组的选择，
+// 那种值根本不在本组成员名单里，一验即穿。成员名单以本地
+// /v1/policy_groups 为准，其次 selectGroupDetails 的 groups；
+// 两处都查不到成员名单时不拦（保持原有行为）。
+const memberOK = (group, candidate) => {
+let list = null;
+if (Array.isArray(pgMembers[group]) && pgMembers[group].length) list = pgMembers[group];
+else if (Array.isArray(sgGroups[group]) && sgGroups[group].length) list = sgGroups[group];
+if (!list) return true;
+return list.includes(candidate);
+};
+const topMembers = Array.isArray(pgMembers[name]) && pgMembers[name].length ? pgMembers[name]
+: (Array.isArray(sgGroups[name]) && sgGroups[name].length ? sgGroups[name] : null);
+if (topMembers) dbg("成员[" + name + "]：" + topMembers.join(" | "));
+
 for (let i = 0; i < 5; i++) {
 if (current === "DIRECT") return "DIRECT（直连）";
 if (current === "REJECT" || current === "REJECT-DROP") return current;
 let next = null;
 let via = "";
-// 1) select 组：官方 decisions 映射最可靠
+const gate = (value, source) => {
+if (!value) return null;
+if (!memberOK(current, value)) {
+dbg("拒绝非成员[" + source + "] " + current + " → " + value);
+return null;
+}
+via = source;
+return value;
+};
+// 1) select 组：官方 decisions 映射（经成员校验后才采信）
 if (decisions && typeof decisions[current] === "string" && decisions[current]) {
-next = decisions[current];
-via = "decisions";
+next = gate(decisions[current], "decisions");
 }
 // 2) /v1/policy_groups 全量数据深度解析
-if (!next) {
-if (groupMap === null) groupMap = buildGroupSelectedMap(await httpAPIGet("/v1/policy_groups"));
-if (groupMap[current]) {
-next = groupMap[current];
-via = "policy_groups";
-}
-}
+if (!next) next = gate(groupMap[current], "policy_groups");
 // 3) 按组名单查 select 接口：GET /v1/policy_groups/select?group_name=xxx -> {"policy": "..."}
 if (!next) {
 const sel = await httpAPIGet("/v1/policy_groups/select", { group_name: current });
-if (sel) next = firstStringField(sel, ["policy", "selected", "now"]);
-if (next) via = "select接口";
-else dbg("select接口：" + current + " 无结果");
+const v = sel ? firstStringField(sel, ["policy", "selected", "now"]) : null;
+next = gate(v, "select接口");
+if (!next && !v) dbg("select接口：" + current + " 无结果");
 }
-// 4) 自动组：test_results 里的当前生效策略
+// 4) 自动组 / 智能组：test_results 里的当前生效策略
 if (!next) {
 if (!testResultsLoaded) {
 testResults = await httpAPIGet("/v1/policy_groups/test_results");
 testResultsLoaded = true;
 }
-next = extractAutoGroupPolicy(testResults, current);
-if (next) via = "test_results";
+next = gate(extractAutoGroupPolicy(testResults, current), "test_results");
 }
 dbg("解析[" + (via || "无") + "] " + current + " → " + (next || "（无）"));
 if (!next || next === current) break;
@@ -1417,12 +1440,25 @@ isp: sources.sources.sbData.isp || sources.sources.sbData.organization || source
 }
 : null;
 
-// 权重：IPPure 实测出口最可信（w=3），CF 次之（w=2），CleanIP / ip.sb 按号段判定（w=1）
+// 国家投票权重：IPPure 原始响应（w=3）——直接取探测响应本身，不要求它与最终落地 IP
+// 逐字一致：落地 IP 在同段内轮换（如 .194/.196）时 IPPure 的国家判定仍然有效；
+// CF（w=1）只作弱参考；CleanIP / ip.sb（w=0）只供字段兜底，不参与国家投票。
+const rawPure = sources.sources.pureData;
+const rawPureGeo = rawPure
+? {
+countryCode: String(rawPure.countryCode || rawPure.country_code || rawPure.countrycode || "").toUpperCase(),
+country: rawPure.country || "",
+region: rawPure.region || rawPure.regionName || rawPure.state || "",
+city: rawPure.city || "",
+isp: rawPure.isp || rawPure.org || rawPure.organization || rawPure.asnName || ""
+}
+: null;
+
 const outboundFallbacks = [
-cleanParsed?.geo? Object.assign({}, cleanParsed.geo, { w: 1 }): null,
-sbGeo? Object.assign({}, sbGeo, { w: 1 }): null,
-pureData?.geo? Object.assign({}, pureData.geo, { w: 3 }): null,
-sources.sources.cfLoc? { countryCode: sources.sources.cfLoc, country: "", region: "", city: "", isp: "", w: 2 }: null
+cleanParsed?.geo? Object.assign({}, cleanParsed.geo, { w: 0 }): null,
+sbGeo? Object.assign({}, sbGeo, { w: 0 }): null,
+rawPureGeo? Object.assign({}, rawPureGeo, { w: 3 }): null,
+sources.sources.cfLoc? { countryCode: sources.sources.cfLoc, country: "", region: "", city: "", isp: "", w: 1 }: null
 ];
 
 const [cleanData, proxyData, scamData, outboundGeo] = await Promise.all([
