@@ -1119,7 +1119,7 @@ function buildIPBlock(name, ip, geo) {
 return [
 `${name} ：${ip || "获取失败"}`,
 `IP地区 ：${formatLocation(geo)}`,
-`运营商 :   ${geo?.isp || "未知"}`
+`运营商 ：${geo?.isp || "未知"}`
 ].join("\n");
 }
 
@@ -1192,7 +1192,7 @@ entranceResult.nodeName || "未知",
 "",
 `IP类型 ：${type.type}`,
 `IP属性 ：${type.attribute}`,
-`纯净度 ：   ${risk.text}`,
+`纯净度 ：${risk.text}`,
 "",
 buildIPBlock("入口IP", entranceIP, entranceGeo),
 "",
