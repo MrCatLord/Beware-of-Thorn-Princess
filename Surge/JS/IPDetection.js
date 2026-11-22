@@ -35,6 +35,7 @@ warnColor: "#FF9F0A",
 errorColor: "#EF476F",
 
 ippure: "https://my.ippure.com/v1/info",
+ippureCard: "https://my.ippure.com/v1/card",
 cfTrace: "https://1.1.1.1/cdn-cgi/trace",
 ipSB: "https://api-ipv4.ip.sb/geoip",
 
@@ -492,6 +493,21 @@ isp: pure.isp || pure.org || pure.organization || pure.asnName || ""
 };
 }
 
+
+function parseIPPureCardScore(html, ip) {
+if (!html || typeof html !== "string") return null;
+const ipMatch = html.match(/IP地址[：:]\s*([0-9a-fA-F:.]+)/);
+if (ipMatch && normalizeIP(ipMatch[1]) && normalizeIP(ipMatch[1]) !== normalizeIP(ip)) return null;
+const scoreMatch = html.match(/IP风险系数[：:]\s*(\d{1,3})\s*%/) || html.match(/风险系数[：:]\s*(\d{1,3})/);
+return validScore(scoreMatch ? scoreMatch[1] : null);
+}
+
+async function getIPPureCardScore(ip, pureData) {
+if (pureData && pureData.score !== null && pureData.score !== undefined) return null;
+const html = await request(CFG.ippureCard);
+return parseIPPureCardScore(html, ip);
+}
+
 // =====================================
 // 11. ProxyCheck
 // =====================================
@@ -607,22 +623,37 @@ vote(cleanData?.residential, 1.5); // CleanIP 权重 1.5
 vote(proxyData?.residential, 1.5); // ProxyCheck 权重 1.5
 
 let type = "未知";
-if (flags.mobile === true && flags.hosting!== true) {
-type = "移动/无线 IP";
-} else if (resScore > nonResScore) {
-const detailed = [cleanData, proxyData].find(s => s && s.residential === true && s.type && s.type!== "未知");
-type = detailed? detailed.type: "住宅 IP";
-} else if (nonResScore > resScore) {
-if (flags.hosting === true) {
-type = "机房 IP";
-} else {
-const detailed = [cleanData, proxyData].find(s => s && s.residential === false && s.type && s.type!== "未知");
-type = detailed? detailed.type: "非住宅 IP";
+
+const subtypeVotes = {};
+const voteSubtype = (subtype, weight, source) => {
+if (!subtype || subtype === "未知" || subtype === "住宅 IP" || subtype === "非住宅 IP") return;
+if (!subtypeVotes[subtype]) subtypeVotes[subtype] = { weight: 0, sources: [] };
+subtypeVotes[subtype].weight += weight;
+if (subtypeVotes[subtype].sources.indexOf(source) < 0) subtypeVotes[subtype].sources.push(source);
+};
+if (flags.hosting === true) voteSubtype("机房 IP", 3, "ip-api");
+if (flags.mobile === true) voteSubtype("移动/无线 IP", 3, "ip-api");
+if (cleanData && cleanData.type) voteSubtype(cleanData.type, 1.5, "CleanIP");
+if (proxyData && proxyData.type) voteSubtype(proxyData.type, 1.5, "ProxyCheck");
+const agreed = Object.keys(subtypeVotes).filter(t => subtypeVotes[t].sources.length >= 2);
+let detailedType = null;
+if (agreed.length) {
+agreed.sort((a, b) => {
+const va = subtypeVotes[a];
+const vb = subtypeVotes[b];
+if (vb.weight !== va.weight) return vb.weight - va.weight;
+return vb.sources.length - va.sources.length;
+});
+detailedType = agreed[0];
 }
+
+if (resScore > nonResScore) {
+type = detailedType === "移动/无线 IP" ? detailedType : "住宅 IP";
+} else if (nonResScore > resScore) {
+type = detailedType && detailedType !== "移动/无线 IP" ? detailedType : "非住宅 IP";
 } else {
-const fallbackType = [cleanData, proxyData].find(s => s && s.type && s.type!== "未知");
-if (fallbackType) type = fallbackType.type;
-else if (pureData && typeof pureData.residential === "boolean") type = pureData.residential? "住宅 IP": "非住宅 IP";
+if (detailedType) type = detailedType;
+else if (pureData && typeof pureData.residential === "boolean") type = pureData.residential ? "住宅 IP" : "非住宅 IP";
 }
 
 // 原生 / 广播属性（IPPure 优先，CleanIP 印证/补全）
@@ -1500,9 +1531,9 @@ return result;
 // 使所有行的值都从同一位置开始（按实测截图：值起点差 36px ≈ 3 个空格宽）。
 function buildIPBlock(name, ip, geo) {
 return [
-`${name}：${ip || "获取失败"}`,
-`IP地区：${formatLocation(geo)}`,
-`运营商： ${geo?.isp || "未知"}`
+`${name} ：${ip || "获取失败"}`,
+`IP地区 ：${formatLocation(geo)}`,
+`运营商 :   ${geo?.isp || "未知"}`
 ].join("\n");
 }
 
@@ -1552,7 +1583,7 @@ finish("检测超时，请手动刷新重试。", "error");
 
 async function buildPanelAttempt(sources, entranceBaseline) {
 const outboundIP = sources.ip;
-const pureData = getIPPureData(outboundIP, sources.sources.pureData);
+let pureData = getIPPureData(outboundIP, sources.sources.pureData);
 
 // 入口检测与下面的落地详情查询并发进行：入口记录在出口探测时已经产生，无需等全部查完
 const entrancePromise = (async () => {
@@ -1605,13 +1636,18 @@ rawPureGeo? Object.assign({}, rawPureGeo, { w: 3 }): null,
 sources.sources.cfLoc? { countryCode: sources.sources.cfLoc, country: "", region: "", city: "", isp: "", w: 1 }: null
 ];
 
-const [cleanData, proxyData, scamData, outboundGeo] = await Promise.all([
+const [cleanData, proxyData, scamData, outboundGeo, pureCardScore] = await Promise.all([
 getCleanIP(outboundIP, sources.sources.cleanRaw),
 getProxyCheck(outboundIP),
 // IPPure 已有评分时 Scamalytics 只是优先级最低的兜底，跳过以省时并减少被限流概率；
 pureData && pureData.score!== null? Promise.resolve(null): getScamalytics(outboundIP),
-getGeo(outboundIP, outboundFallbacks)
+getGeo(outboundIP, outboundFallbacks),
+getIPPureCardScore(outboundIP, pureData)
 ]);
+if (pureCardScore !== null && pureCardScore !== undefined) {
+if (!pureData) pureData = { source: "IPPure", ip: outboundIP, score: pureCardScore, residential: null, broadcast: null, geo: {} };
+else if (pureData.score === null || pureData.score === undefined) pureData.score = pureCardScore;
+}
 
 const entranceResult = await entrancePromise;
 const entranceIP = entranceResult.ip;
@@ -1629,9 +1665,9 @@ const type = getIPType(pureData, proxyData, cleanData, outboundGeo?.flags);
 const content = [
 entranceResult.nodeName || "未知",
 "",
-`IP类型：${type.type}`,
-`IP属性：${type.attribute}`,
-`纯净度： ${risk.text}`,
+`IP类型 ：${type.type}`,
+`IP属性 ：${type.attribute}`,
+`纯净度 :   ${risk.text}`,
 "",
 buildIPBlock("入口IP", entranceIP, entranceGeo),
 "",
