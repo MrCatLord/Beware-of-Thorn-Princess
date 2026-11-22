@@ -123,6 +123,7 @@ const headers = Object.assign(
 "User-Agent":
 "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1",
 "Cache-Control": "no-cache",
+Connection: "close",
 Pragma: "no-cache"
 },
 extraHeaders || {}
@@ -987,24 +988,14 @@ totalTimer = setTimeout(() => {
 finish("检测超时，请手动刷新重试。", "error");
 }, CFG.totalTimeout * 1000);
 
-(async () => {
-try {
-// 脚本一启动先给最近请求拍基线快照（本地接口，毫秒级），用于剔除上一轮的旧入口记录
-const entranceBaselinePromise = snapshotEntranceBaseline();
-const sources = await getOutboundSources();
+async function buildPanelAttempt(sources, entranceBaseline) {
 const outboundIP = sources.ip;
-
-if (!outboundIP) {
-finish("落地 IP 获取失败，请检查网络。", "error");
-return;
-}
-
 const pureData = getIPPureData(outboundIP, sources.sources.pureData);
 
 // 入口检测与下面的落地详情查询并发进行：入口记录在出口探测时已经产生，无需等全部查完
 const entrancePromise = (async () => {
 try {
-const ent = await getEntranceIP(await entranceBaselinePromise);
+const ent = await getEntranceIP(entranceBaseline);
 if (!ent.ip || ent.ip === outboundIP) return { ip: ent.ip, geo: null };
 return { ip: ent.ip, geo: await getGeo(ent.ip, []) };
 } catch (e) {
@@ -1063,9 +1054,38 @@ buildIPBlock("入口 IP", entranceIP, entranceGeo),
 buildIPBlock("落地 IP", outboundIP, outboundGeo)
 ].join("\n");
 
-const isError = sources.conflict || risk.score === null;
+const isError = sources.consensus === "split" || risk.score === null;
 
-finish(content, isError);
+return { content: content, isError: isError };
+}
+
+(async () => {
+try {
+const startedAt = Date.now();
+// 脚本一启动先给最近请求拍基线快照（本地接口，毫秒级），用于剔除上一轮的旧入口记录
+// 必须 await 等快照拍完再发探测请求：只发起不等待的话，快照回调可能在探测请求
+// 已经进入最近请求列表之后才返回，那样本轮请求会被误当成旧记录扣掉，入口变空。
+const entranceBaseline = await snapshotEntranceBaseline();
+let sources = await getOutboundSources();
+
+if (!sources.ip) {
+finish("落地 IP 获取失败，请检查网络。", "error");
+return;
+}
+
+let panel = await buildPanelAttempt(sources, entranceBaseline);
+
+// 异常自动复检一次：切节点后常有旧连接或旧路由残留，首轮出现无多数分歧或无评分时，
+// 隔 800ms 用全新连接再测一轮；第二轮仍异常才报红。超时预算不够时不复检。
+if (panel.isError && Date.now() - startedAt < 9000) {
+await new Promise(resolve => setTimeout(resolve, 800));
+const sources2 = await getOutboundSources();
+if (sources2.ip) {
+panel = await buildPanelAttempt(sources2, entranceBaseline);
+}
+}
+
+finish(panel.content, panel.isError);
 } catch (e) {
 finish("检测异常：" + String(e), "error");
 }
