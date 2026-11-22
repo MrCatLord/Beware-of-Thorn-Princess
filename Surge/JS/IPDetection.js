@@ -2,21 +2,24 @@
 * Surge iOS 6 - IP Detection
 * IP 类型 / 纯净度 / 入口 IP / 落地 IP
 *
-* 1. 多源出口 IP 探测与一致性交叉验证，CleanIP 参与投票，
-* 三/四源分歧（无多数）时用 ipwho.is 作决胜源再投一次
+* 1. 多源出口 IP 探测与一致性交叉验证，CleanIP 参与投票；
+* 无多数分歧时先用 ipwho.is 决胜，仍无多数再用全新连接复测 IPPure + CF 定案
 * 2. IPPure > ProxyCheck > Scamalytics 纯净度优先级，
-* 面板显示格式与原版完全一致，内部改进不增加显示项
+* 面板显示按用户指定版式，内部改进不增加显示项
 * 3. IP 类型引入 ip-api 的 mobile / proxy / hosting 强标志加权投票，
 * 再由 CleanIP + IPPure + ProxyCheck 交叉辅助判断
-* 4. 归属地按国家代码投票（不再用不同语言的字符串硬凑票数）：
+* 4. 归属地：国家代码投票定国家，地名只从国家一致的来源记录里取：
 * - 中国：直辖市只显示直辖市；其他显示 省份 + 城市
-* - 香港 / 澳门 / 台湾：国家/地区名 + 下辖地区
-* - 其他国家：国家 + 州/省 + 城市
-* 5. 入口 IP 在脚本启动时拍基线快照，只对本轮新增的代理请求投票，避免滞留上一轮入口；
+* - 香港 / 澳门 / 台湾：国家/地区名 + 下辖地区（泛称如 臺灣省 自动忽略）
+* - 其他国家：国家 + 州/省 + 城市，国家名以任何语言重复出现时自动去重
+* - 双语并列值（如“臺灣省 or 台灣省”）自动只取第一种写法
+* 5. 入口 IP 在脚本启动时先等基线快照拍完再发探测，只对本轮新增请求投票，避免滞留上一轮入口；
 *    且与落地详情并发检测，不再串行等待
 * 6. 入口 IP 与落地 IP 相同时复用归属地结果，不重复查询
+* 7. 节点名：候选优先取自产生落地 IP 的出口探测请求本身，深挖请求记录里的
+*    全部策略字段（含嵌套决策链），再用 /v1/policies 的真实节点/策略组清单对账，
+*    外部订阅策略的 identifier 会先翻译回节点名；是组名才走组解析兜底
 */
-
 
 // =====================================
 // 1. 基础配置
@@ -342,6 +345,21 @@ if (whoIP) {
 entries = entries.concat([{ key: "who", ip: whoIP}]);
 verification = verifyOutboundConsistency(entries);
 results.whoData = who;
+}
+}
+
+// 仍无多数时，用全新连接复测 IPPure + CF 两个高可信源，合并投票定案，
+// 避免某一条探测被旧连接/旧路由带偏时把落地 IP 选错
+if (verification.consensus === "split") {
+const [pure2, traceBody2] = await Promise.all([getJSON(CFG.ippure), request(CFG.cfTrace)]);
+const trace2 = parseTrace(traceBody2);
+const extra = [
+{ key: "pure", ip: normalizeIP(pure2?.ip) },
+{ key: "cf", ip: trace2.ip }
+].filter(e => e.ip);
+if (extra.length) {
+entries = entries.concat(extra);
+verification = verifyOutboundConsistency(entries);
 }
 }
 
@@ -709,8 +727,10 @@ return name;
 
 // =====================================
 // 16. 多源归属地交叉验证
-// 国家用国家代码投票；地名优先中文源，英文源只兜底
-// 来源：ip-api（中文）+ ipinfo + ipwho.is + 已抓到的 CleanIP/ip.sb/IPPure/CF
+// 每个来源先整理成一条独立记录 {code, country, region, city, isp}；
+// 国家代码投票定下国家后，地名只从“国家一致”的记录里按优先级取，
+// 不再跨来源拼凑（杜绝 香港 + 臺灣省 这类混合结果）；显示时统一去重
+// （杜绝 新加坡 · North West · 新加坡 这类国家名重复）。
 // =====================================
 
 function voteCountryCode(candidates) {
@@ -724,26 +744,80 @@ const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
 return sorted.length? sorted[0][0]: "";
 }
 
-function firstNonEmpty(values) {
-for (const v of values) {
-const s = cleanAreaName(v);
-if (s) return s;
-}
-return "";
+function sanitizeAreaName(value) {
+let s = cleanAreaName(value);
+if (!s) return "";
+// 个别数据库返回“臺灣省 or 台灣省”这类双语并列值，只取第一种写法
+if (s.includes(" or ")) s = s.split(" or ")[0].trim();
+return s;
 }
 
-function getISP(api, info, who, fallbacks) {
-const stripAS = s => cleanAreaName(String(s || "").replace(/^AS\d+\s*/i, ""));
-return (
-firstNonEmpty([
-api?.status === "success"? api.isp: "",
-who?.connection?.isp || who?.connection?.org || "",
-info?.org? stripAS(info.org): "",
-api?.status === "success"? api.org || api.asname: "",
-...(fallbacks || []).map(f => (f? stripAS(f.isp): ""))
-]) || "未知"
-);
+// 各来源整理成统一记录；prio 越小优先级越高（ip-api 中文 > 已抓兜底 > ipwho > ipinfo）
+function buildGeoRecords(a, b, who, fallbacks) {
+const records = [];
+if (a?.status === "success") {
+records.push({
+code: String(a.countryCode || "").toUpperCase(),
+country: a.country || "",
+region: a.regionName || "",
+city: a.city || "",
+isp: a.isp || a.org || a.asname || "",
+prio: 0
+});
 }
+for (const f of fallbacks || []) {
+if (!f) continue;
+records.push({
+code: String(f.countryCode || "").toUpperCase(),
+country: f.country || "",
+region: f.region || "",
+city: f.city || "",
+isp: f.isp || "",
+prio: 1
+});
+}
+if (who && who.success!== false && (who.ip || who.country_code)) {
+records.push({
+code: String(who.country_code || "").toUpperCase(),
+country: who.country || "",
+region: who.region || "",
+city: who.city || "",
+isp: who.connection?.isp || who.connection?.org || "",
+prio: 2
+});
+}
+if (b) {
+records.push({
+code: String(b.country || "").toUpperCase(),
+country: "",
+region: b.region || "",
+city: b.city || "",
+isp: b.org? String(b.org).replace(/^AS\d+\s*/i, ""): "",
+prio: 3
+});
+}
+return records;
+}
+
+const GEO_COUNTRY_NAMES = {
+CN: "中国", HK: "香港", MO: "澳门", TW: "台湾", SG: "新加坡",
+JP: "日本", KR: "韩国", US: "美国", GB: "英国", DE: "德国",
+FR: "法国", AU: "澳大利亚", CA: "加拿大", NL: "荷兰", CH: "瑞士",
+IT: "意大利", ES: "西班牙", RU: "俄罗斯", IN: "印度", TH: "泰国",
+VN: "越南", MY: "马来西亚", ID: "印度尼西亚", PH: "菲律宾", TR: "土耳其"
+};
+
+// 同一国家的其他语言写法（用于识别“城市名其实就是国家名”的重复）
+const GEO_COUNTRY_ALIASES = {
+CN: ["china"], HK: ["hong kong"], MO: ["macau", "macao"], TW: ["taiwan"],
+SG: ["singapore"], JP: ["japan"], KR: ["south korea", "korea", "republic of korea"],
+US: ["united states", "united states of america", "usa"],
+GB: ["united kingdom", "uk", "great britain"], DE: ["germany"], FR: ["france"],
+AU: ["australia"], CA: ["canada"], NL: ["netherlands", "holland"],
+CH: ["switzerland"], IT: ["italy"], ES: ["spain"], RU: ["russia", "russian federation"],
+IN: ["india"], TH: ["thailand"], VN: ["vietnam"], MY: ["malaysia"],
+ID: ["indonesia"], PH: ["philippines"], TR: ["turkey", "türkiye"]
+};
 
 async function getGeo(ip, fallbackGeos) {
 if (!ip) return null;
@@ -760,38 +834,35 @@ getJSON(CFG.ipWho + encodeURIComponent(ip))
 ]);
 
 const apiOK = a?.status === "success";
-const whoOK = who && who.success!== false && (who.ip || who.country_code);
-
-if (!apiOK &&!b &&!whoOK &&!fallbacks.length) return null;
+const records = buildGeoRecords(apiOK? a: null, b, who, fallbacks);
+if (!records.length) return null;
 
 // 国家：用代码投票，避免中英文字符串对不上
-const countryCode = voteCountryCode([
-apiOK? a.countryCode: "",
-b?.country || "",
-whoOK? who.country_code: "",
-...fallbacks.map(f => f.countryCode || "")
-]);
+const countryCode = voteCountryCode(records.map(r => r.code));
 
-const countryNames = { CN: "中国", HK: "香港", MO: "澳门", TW: "台湾"};
+// 一致性过滤：地名只取国家代码与胜出代码相同的记录；
+// 没有代码的记录仅在无一致记录时兜底，再不行才用全部记录。
+let consistent = records.filter(r => r.code && r.code === countryCode);
+if (!consistent.length) consistent = records.filter(r =>!r.code);
+if (!consistent.length) consistent = records.slice();
+consistent.sort((x, y) => x.prio - y.prio);
+
 const country =
-countryNames[countryCode] ||
-firstNonEmpty([apiOK? a.country: "",...fallbacks.map(f => f.country), whoOK? who.country: "", b?.country || ""]);
+GEO_COUNTRY_NAMES[countryCode] ||
+sanitizeAreaName((consistent.find(r => r.country) || {}).country || "") ||
+countryCode;
 
-// 地名候选：中文源优先（ip-api > CleanIP 等 fallback），英文源兜底
-const regionCandidates = [
-apiOK? a.regionName: "",
-...fallbacks.map(f => f.region),
-whoOK? who.region: "",
-b?.region || ""
-];
-const cityCandidates = [
-apiOK? a.city: "",
-...fallbacks.map(f => f.city),
-whoOK? who.city: "",
-b?.city || ""
-];
-const regionRaw = firstNonEmpty(regionCandidates);
-const cityRaw = firstNonEmpty(cityCandidates);
+const pickField = field => {
+for (const r of consistent) {
+const v = sanitizeAreaName(r[field]);
+if (v) return v;
+}
+return "";
+};
+
+const regionRaw = pickField("region");
+const cityRaw = pickField("city");
+const isp = pickField("isp") || "未知";
 
 const flags = {
 mobile: apiOK? parseBooleanFlag(a.mobile): null,
@@ -799,13 +870,11 @@ proxy: apiOK? parseBooleanFlag(a.proxy): null,
 hosting: apiOK? parseBooleanFlag(a.hosting): null
 };
 
-const isp = getISP(apiOK? a: null, b, whoOK? who: null, fallbacks);
-
 // ---- 中国 ----
 if (countryCode === "CN") {
 const municipality = getMunicipality(regionRaw) || getMunicipality(cityRaw);
 if (municipality) {
-// 直辖市：只显示直辖市本身，保持原有格式
+// 直辖市：只显示直辖市本身
 return { country: "中国", countryCode, province: municipality, city: municipality, area: "", isp, flags};
 }
 // 其他：省份 + 城市
@@ -818,9 +887,9 @@ return { country: "中国", countryCode, province, city, area: "", isp, flags};
 // ---- 香港 / 澳门 / 台湾：地区名 + 下辖地区 ----
 if (countryCode === "HK" || countryCode === "MO" || countryCode === "TW") {
 const generics = {
-HK: ["hong kong", "hong kong sar", "香港", "香港特别行政区"],
-MO: ["macau", "macao", "澳门", "澳门特别行政区"],
-TW: ["taiwan", "taiwan province", "taiwan province of china", "台湾", "台湾省"]
+HK: ["hong kong", "hong kong sar", "hong kong special administrative region", "香港", "香港特别行政区", "香港特別行政區"],
+MO: ["macau", "macao", "macao sar", "澳门", "澳門", "澳门特别行政区", "澳門特別行政區"],
+TW: ["taiwan", "taiwan province", "taiwan province of china", "台湾", "台灣", "台湾省", "臺灣省"]
 }[countryCode];
 
 // 台湾优先取城市（台北/新北等本身就是下辖市），港澳优先取地区
@@ -832,17 +901,15 @@ area = normalizeSpecialArea(cand, countryCode);
 if (area) break;
 }
 }
-return { country: countryNames[countryCode], countryCode, province: "", city: "", area, isp, flags};
+return { country: GEO_COUNTRY_NAMES[countryCode], countryCode, province: "", city: "", area, isp, flags};
 }
 
-// ---- 其他国家：国家 + 州/省 + 城市 ----
-const region = cleanAreaName(regionRaw);
-const city = cleanAreaName(cityRaw);
+// ---- 其他国家：国家 + 州/省 + 城市（重复项在 formatLocation 统一去掉） ----
 return {
 country: country || countryCode,
 countryCode,
-province: region && region.toLowerCase()!== city.toLowerCase()? region: "",
-city,
+province: regionRaw,
+city: cityRaw,
 area: "",
 isp,
 flags
@@ -852,18 +919,34 @@ flags
 function formatLocation(geo) {
 if (!geo) return "未知";
 
-if (geo.countryCode === "CN") {
-if (geo.province && geo.city && geo.province === geo.city) {
-return [geo.country, geo.province].join(" · ");
-}
-return [geo.country, geo.province, geo.city].filter(Boolean).join(" · ") || "未知";
+const code = geo.countryCode || "";
+const aliases = new Set(
+[geo.country, ...(GEO_COUNTRY_ALIASES[code] || [])]
+.filter(Boolean)
+.map(s => String(s).toLowerCase())
+);
+const parts = [];
+const pushPart = value => {
+const s = cleanAreaName(value);
+if (!s) return;
+const lower = s.toLowerCase();
+if (parts.some(p => p.toLowerCase() === lower)) return; // 与已显示部分完全重复
+if (parts.length && aliases.has(lower)) return; // 国家名又以地区/城市形式重复出现
+parts.push(s);
+};
+
+pushPart(geo.country);
+if (code === "CN") {
+pushPart(geo.province);
+if (geo.city && geo.city!== geo.province) pushPart(geo.city);
+} else if (code === "HK" || code === "MO" || code === "TW") {
+pushPart(geo.area);
+} else {
+pushPart(geo.province);
+pushPart(geo.city);
 }
 
-if (geo.countryCode === "HK" || geo.countryCode === "MO" || geo.countryCode === "TW") {
-return [geo.country, geo.area].filter(Boolean).join(" · ") || "未知";
-}
-
-return [geo.country, geo.province, geo.city].filter(Boolean).join(" · ") || "未知";
+return parts.join(" · ") || "未知";
 }
 
 // =====================================
@@ -913,6 +996,10 @@ Array.isArray(result?.requests) ? result.requests : []
 
 const DETECTOR_PATTERN =
 /(my\.ippure\.com|1\.1\.1\.1|api-ipv4\.ip\.sb|api\.cleanip\.io|ip-api\.com|ipinfo\.io|ipwho\.is|scamalytics\.com|proxycheck\.io)/i;
+
+// 出口探测请求（真正产生落地 IP 的那四个）：节点名候选优先只认它们，
+// 保证显示的节点与落地 IP 出自同一批请求、同一个出口
+const OUTBOUND_PROBE_PATTERN = /(my\.ippure\.com|1\.1\.1\.1|api-ipv4\.ip\.sb|api\.cleanip\.io)/i;
 
 function requestSignature(item) {
 return [
@@ -988,6 +1075,7 @@ function pickEntranceFromRequests(requests, baseline) {
 const remaining = Object.assign({}, baseline || {});
 const counts = {};
 const candidateMap = new Map();
+const probeMap = new Map();
 for (const item of requests) {
 if (!DETECTOR_PATTERN.test(item?.URL || "")) continue;
 const sig = requestSignature(item);
@@ -997,17 +1085,20 @@ continue;
 }
 const remote = item?.remoteAddress || "";
 const isProxy = /\(Proxy\)/i.test(remote);
-// 本轮新增探测请求的实际策略候选：走代理的请求权重更高（直连请求也会带策略名，避免喧宾夺主）
+// 本轮新增探测请求的实际策略候选：走代理的请求权重更高（直连请求也会带策略名，避免喧宾夺主）；
+// 出口探测请求的候选单独计票并优先采用，与落地 IP 保持同源
 const weight = isProxy ? 2 : 1;
+const target = OUTBOUND_PROBE_PATTERN.test(item?.URL || "") ? probeMap : candidateMap;
 for (const name of extractPolicyCandidates(item)) {
-candidateMap.set(name, (candidateMap.get(name) || 0) + weight);
+target.set(name, (target.get(name) || 0) + weight);
 }
 if (!isProxy) continue;
 const ip = cleanRemoteIP(remote);
 if (ip) counts[ip] = (counts[ip] || 0) + 1;
 }
 
-const candidates = Array.from(candidateMap.entries())
+const effectiveMap = probeMap.size ? probeMap : candidateMap;
+const candidates = Array.from(effectiveMap.entries())
 .map(([name, votes]) => ({ name, votes }))
 .sort((a, b) => b.votes - a.votes);
 const policyName = candidates.length ? candidates[0].name : "";
@@ -1149,16 +1240,25 @@ return current;
 // 避免再把组名或接口错误值显示到面板上。
 async function resolveNodeFromCandidates(candidates) {
 if (!candidates || !candidates.length) return "";
-const policies = await httpAPIGet("/v1/policies");
+const policies = (await httpAPIGet("/v1/policies?include_external=true")) || (await httpAPIGet("/v1/policies"));
 const proxies = new Set(Array.isArray(policies?.proxies) ? policies.proxies : []);
 const groups = new Set(Array.isArray(policies?.["policy-groups"]) ? policies["policy-groups"] : []);
+// 外部订阅策略组里的节点在记录里可能只是 identifier，先翻译回真实节点名
+const extMap = {};
+if (Array.isArray(policies?.["external-policies"])) {
+for (const p of policies["external-policies"]) {
+if (p && typeof p.identifier === "string" && typeof p.name === "string") extMap[p.identifier] = p.name;
+}
+}
+const translate = n => (typeof n === "string" && extMap[n]) || n;
+candidates = candidates.map(c => ({ name: translate(c.name), votes: c.votes }));
 const hasLists = proxies.size > 0 || groups.size > 0;
 for (const c of candidates) {
 if (proxies.has(c.name) && !groups.has(c.name)) return c.name;
 }
 const resolvedList = [];
 for (const c of candidates) {
-const r = await resolveNodeName(c.name);
+const r = translate(await resolveNodeName(c.name));
 if (r && !resolvedList.includes(r)) resolvedList.push(r);
 if (r && proxies.has(r) && !groups.has(r)) return r;
 }
@@ -1189,18 +1289,10 @@ if (!result.candidates.length) {
 try {
 const active = await httpAPIGet("/v1/requests/active");
 const list = Array.isArray(active?.requests) ? active.requests : [];
-const map = new Map();
-for (const item of list) {
-if (!DETECTOR_PATTERN.test(item?.URL || "")) continue;
-for (const name of extractPolicyCandidates(item)) {
-map.set(name, (map.get(name) || 0) + 1);
-}
-}
-if (map.size) {
-result.candidates = Array.from(map.entries())
-.map(([name, votes]) => ({ name, votes }))
-.sort((a, b) => b.votes - a.votes);
-result.policyName = result.candidates[0].name;
+const act = pickEntranceFromRequests(list, {});
+if (act.candidates.length) {
+result.candidates = act.candidates;
+result.policyName = act.policyName;
 }
 } catch (e) {}
 }
