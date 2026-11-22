@@ -888,20 +888,26 @@ if (!normalized || isPrivateOrLoopbackIP(normalized)) return null;
 return normalized;
 }
 
-function queryRecentRequests() {
+function httpAPIGet(path) {
 return new Promise(resolve => {
-if (typeof $httpAPI!== "function") {
-resolve([]);
+if (typeof $httpAPI !== "function") {
+resolve(null);
 return;
 }
 try {
-$httpAPI("GET", "/v1/requests/recent", null, result => {
-resolve(Array.isArray(result?.requests)? result.requests: []);
+$httpAPI("GET", path, null, result => {
+resolve(result || null);
 });
 } catch (e) {
-resolve([]);
+resolve(null);
 }
 });
+}
+
+function queryRecentRequests() {
+return httpAPIGet("/v1/requests/recent").then(result =>
+Array.isArray(result?.requests) ? result.requests : []
+);
 }
 
 const DETECTOR_PATTERN =
@@ -941,22 +947,63 @@ function pickEntranceFromRequests(requests, baseline) {
 // 这样入口没变时新增请求照样计票，入口变了时旧入口不会滞留。
 const remaining = Object.assign({}, baseline || {});
 const counts = {};
+const policyCounts = {};
 for (const item of requests) {
 if (!DETECTOR_PATTERN.test(item?.URL || "")) continue;
-const remote = item?.remoteAddress || "";
-if (!/\(Proxy\)/i.test(remote)) continue;
 const sig = requestSignature(item);
 if (remaining[sig] > 0) {
 remaining[sig] -= 1;
 continue;
 }
+// 本轮新增探测请求实际使用的策略名（即当前节点/策略组），多数票为准
+const pname = item?.policyName || (typeof item?.policy === "string" ? item.policy : item?.policy?.name) || "";
+if (pname) policyCounts[pname] = (policyCounts[pname] || 0) + 1;
+const remote = item?.remoteAddress || "";
+if (!/\(Proxy\)/i.test(remote)) continue;
 const ip = cleanRemoteIP(remote);
 if (ip) counts[ip] = (counts[ip] || 0) + 1;
 }
 
+const policyGroups = Object.entries(policyCounts).sort((a, b) => b[1] - a[1]);
+const policyName = policyGroups.length ? policyGroups[0][0] : "";
 const groups = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-if (!groups.length) return { ip: null, distinct: 0, votes: 0 };
-return { ip: groups[0][0], distinct: groups.length, votes: groups[0][1] };
+if (!groups.length) return { ip: null, distinct: 0, votes: 0, policyName: policyName };
+return { ip: groups[0][0], distinct: groups.length, votes: groups[0][1], policyName: policyName };
+}
+
+
+function lookupGroupSelected(groupsData, name) {
+if (!groupsData || !name) return null;
+if (Array.isArray(groupsData)) {
+const item = groupsData.find(g => g && (g.name === name || g.group === name));
+if (!item) return null;
+const v = item.selected || item.policy || item.now || item.selectedPolicy || null;
+return typeof v === "string" ? v : null;
+}
+if (typeof groupsData === "object") {
+const v = groupsData[name];
+if (typeof v === "string") return v;
+if (v && typeof v === "object") {
+const inner = v.selected || v.policy || v.now || v.selectedPolicy || null;
+return typeof inner === "string" ? inner : null;
+}
+}
+return null;
+}
+
+async function resolveNodeName(policyName) {
+const name = String(policyName || "").trim();
+if (!name) return "";
+if (name === "DIRECT") return "DIRECT（直连）";
+if (name === "REJECT" || name === "REJECT-DROP") return name;
+let current = name;
+const groups = await httpAPIGet("/v1/policy_groups");
+for (let i = 0; i < 3; i++) {
+const next = lookupGroupSelected(groups, current);
+if (!next || next === current) break;
+current = next;
+}
+return current;
 }
 
 async function getEntranceIP(baseline) {
@@ -996,10 +1043,11 @@ const pureData = getIPPureData(outboundIP, sources.sources.pureData);
 const entrancePromise = (async () => {
 try {
 const ent = await getEntranceIP(entranceBaseline);
-if (!ent.ip || ent.ip === outboundIP) return { ip: ent.ip, geo: null };
-return { ip: ent.ip, geo: await getGeo(ent.ip, []) };
+const nodeName = await resolveNodeName(ent.policyName);
+if (!ent.ip || ent.ip === outboundIP) return { ip: ent.ip, geo: null, nodeName: nodeName };
+return { ip: ent.ip, geo: await getGeo(ent.ip, []), nodeName: nodeName };
 } catch (e) {
-return { ip: null, geo: null };
+return { ip: null, geo: null, nodeName: "" };
 }
 })();
 const cleanParsed = parseCleanIPPayload(sources.sources.cleanRaw, outboundIP);
@@ -1044,6 +1092,7 @@ const risk = calculateRisk(riskResults);
 const type = getIPType(pureData, proxyData, cleanData, outboundGeo?.flags);
 
 const content = [
+`节点：${entranceResult.nodeName || "未知"}`,
 "【IP 信息】",
 `类型：${type.type}`,
 `属性：${type.attribute}`,
