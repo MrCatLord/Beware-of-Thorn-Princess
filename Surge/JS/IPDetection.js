@@ -1020,23 +1020,11 @@ return result;
 // =====================================
 
 
-// Surge 面板正文是纯文本，没有字号/字重设置；用 Unicode 数学粗体字符模拟加粗效果
-// （英文字母和数字可转换，中文/符号无对应粗体码点，保持原样）
-function toBoldText(str) {
-return String(str || "").replace(/[A-Za-z0-9]/g, ch => {
-const c = ch.charCodeAt(0);
-if (c >= 65 && c <= 90) return String.fromCodePoint(0x1D5D4 + (c - 65));
-if (c >= 97 && c <= 122) return String.fromCodePoint(0x1D5EE + (c - 97));
-return String.fromCodePoint(0x1D7EC + (c - 48));
-});
-}
-
 function buildIPBlock(name, ip, geo) {
 return [
-`【${name}】`,
-`IP：${ip || "获取失败"}`,
-`地区：${formatLocation(geo)}`,
-`运营商：${geo?.isp || "未知"}`
+`${name} ：${ip || "获取失败"}`,
+`IP地区 ：${formatLocation(geo)}`,
+`运营商 :${geo?.isp || "未知"}`
 ].join("\n");
 }
 
@@ -1105,16 +1093,15 @@ const risk = calculateRisk(riskResults);
 const type = getIPType(pureData, proxyData, cleanData, outboundGeo?.flags);
 
 const content = [
-toBoldText(entranceResult.nodeName || "未知"),
+" ".repeat(19) + (entranceResult.nodeName || "未知"),
 "",
-"【IP 信息】",
-`类型：${type.type}`,
-`属性：${type.attribute}`,
-`纯净度：${risk.text}`,
+`IP类型 ：${type.type}`,
+`IP属性 ：${type.attribute}`,
+`纯净度 :${risk.text}`,
 "",
-buildIPBlock("入口 IP", entranceIP, entranceGeo),
+buildIPBlock("入口IP", entranceIP, entranceGeo),
 "",
-buildIPBlock("落地 IP", outboundIP, outboundGeo)
+buildIPBlock("落地IP", outboundIP, outboundGeo)
 ].join("\n");
 
 const isError = sources.consensus === "split" || risk.score === null;
