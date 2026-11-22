@@ -1117,9 +1117,9 @@ return result;
 // 使所有行的值都从同一位置开始（按实测截图：值起点差 36px ≈ 3 个空格宽）。
 function buildIPBlock(name, ip, geo) {
 return [
-`${name} : ${ip || "获取失败"}`,
-`IP地区 : ${formatLocation(geo)}`,
-`运营商 : ${geo?.isp || "未知"}`
+`${name} :  ${ip || "获取失败"}`,
+`IP地区 :  ${formatLocation(geo)}`,
+`运营商 ：${geo?.isp || "未知"}`
 ].join("\n");
 }
 
@@ -1190,8 +1190,8 @@ const type = getIPType(pureData, proxyData, cleanData, outboundGeo?.flags);
 const content = [
 entranceResult.nodeName || "未知",
 "",
-`IP类型 : ${type.type}`,
-`IP属性 : ${type.attribute}`,
+`IP类型 :  ${type.type}`,
+`IP属性 :  ${type.attribute}`,
 `纯净度 ：${risk.text}`,
 "",
 buildIPBlock("入口IP", entranceIP, entranceGeo),
