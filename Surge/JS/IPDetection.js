@@ -16,6 +16,7 @@
 * 6. 入口 IP 与落地 IP 相同时复用归属地结果，不重复查询
 */
 
+
 // =====================================
 // 1. 基础配置
 // =====================================
@@ -864,7 +865,7 @@ return [geo.country, geo.province, geo.city].filter(Boolean).join(" · ") || "�
 }
 
 // =====================================
-// 17. 入口 IP 识别（对最近代理请求投票，多入口时提示）
+// 17. 入口 IP 识别（基线快照剔除上一轮记录，只对本轮新增代理请求投票）
 // =====================================
 
 function cleanRemoteIP(value) {
@@ -902,29 +903,66 @@ resolve([]);
 });
 }
 
-function pickEntranceFromRequests(requests) {
-const pattern =
+const DETECTOR_PATTERN =
 /(my\.ippure\.com|1\.1\.1\.1|api-ipv4\.ip\.sb|api\.cleanip\.io|ip-api\.com|ipinfo\.io|ipwho\.is|scamalytics\.com|proxycheck\.io)/i;
 
+function requestSignature(item) {
+return [
+item?.id ?? item?.requestId ?? "",
+item?.URL || "",
+item?.remoteAddress || "",
+item?.startDate ?? item?.startTime ?? item?.date ?? item?.time ?? ""
+].join("|");
+}
+
+function buildBaselineCounts(requests) {
 const counts = {};
-for (const item of requests) {
-if (!pattern.test(item?.URL || "")) continue;
+for (const item of requests || []) {
+if (!DETECTOR_PATTERN.test(item?.URL || "")) continue;
 const remote = item?.remoteAddress || "";
 if (!/\(Proxy\)/i.test(remote)) continue;
+const sig = requestSignature(item);
+counts[sig] = (counts[sig] || 0) + 1;
+}
+return counts;
+}
+
+async function snapshotEntranceBaseline() {
+try {
+return buildBaselineCounts(await queryRecentRequests());
+} catch (e) {
+return {};
+}
+}
+
+function pickEntranceFromRequests(requests, baseline) {
+// 基线多重集扣减：本轮开始前已存在的请求逐个扣掉，只统计本轮新增的。
+// 这样入口没变时新增请求照样计票，入口变了时旧入口不会滞留。
+const remaining = Object.assign({}, baseline || {});
+const counts = {};
+for (const item of requests) {
+if (!DETECTOR_PATTERN.test(item?.URL || "")) continue;
+const remote = item?.remoteAddress || "";
+if (!/\(Proxy\)/i.test(remote)) continue;
+const sig = requestSignature(item);
+if (remaining[sig] > 0) {
+remaining[sig] -= 1;
+continue;
+}
 const ip = cleanRemoteIP(remote);
 if (ip) counts[ip] = (counts[ip] || 0) + 1;
 }
 
 const groups = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-if (!groups.length) return { ip: null, distinct: 0, votes: 0};
-return { ip: groups[0][0], distinct: groups.length, votes: groups[0][1]};
+if (!groups.length) return { ip: null, distinct: 0, votes: 0 };
+return { ip: groups[0][0], distinct: groups.length, votes: groups[0][1] };
 }
 
-async function getEntranceIP() {
-let result = pickEntranceFromRequests(await queryRecentRequests());
+async function getEntranceIP(baseline) {
+let result = pickEntranceFromRequests(await queryRecentRequests(), baseline);
 if (result.ip) return result;
-await new Promise(resolve => setTimeout(resolve, 250));
-result = pickEntranceFromRequests(await queryRecentRequests());
+await new Promise(resolve => setTimeout(resolve, 100));
+result = pickEntranceFromRequests(await queryRecentRequests(), baseline);
 return result;
 }
 
@@ -951,6 +989,8 @@ finish("检测超时，请手动刷新重试。", "error");
 
 (async () => {
 try {
+// 脚本一启动先给最近请求拍基线快照（本地接口，毫秒级），用于剔除上一轮的旧入口记录
+const entranceBaselinePromise = snapshotEntranceBaseline();
 const sources = await getOutboundSources();
 const outboundIP = sources.ip;
 
@@ -960,6 +1000,17 @@ return;
 }
 
 const pureData = getIPPureData(outboundIP, sources.sources.pureData);
+
+// 入口检测与下面的落地详情查询并发进行：入口记录在出口探测时已经产生，无需等全部查完
+const entrancePromise = (async () => {
+try {
+const ent = await getEntranceIP(await entranceBaselinePromise);
+if (!ent.ip || ent.ip === outboundIP) return { ip: ent.ip, geo: null };
+return { ip: ent.ip, geo: await getGeo(ent.ip, []) };
+} catch (e) {
+return { ip: null, geo: null };
+}
+})();
 const cleanParsed = parseCleanIPPayload(sources.sources.cleanRaw, outboundIP);
 
 // 已抓到数据的归属地兜底（不额外发请求）：CleanIP / ip.sb / IPPure / CF 国家码
@@ -988,16 +1039,11 @@ pureData && pureData.score!== null? Promise.resolve(null): getScamalytics(outbou
 getGeo(outboundIP, outboundFallbacks)
 ]);
 
-const entrance = await getEntranceIP();
-const entranceIP = entrance.ip;
+const entranceResult = await entrancePromise;
+const entranceIP = entranceResult.ip;
 
 // 入口与落地相同则复用归属地，避免重复查询
-const entranceGeo =
-entranceIP && entranceIP === outboundIP
-? outboundGeo
-: entranceIP
-? await getGeo(entranceIP, [])
-: null;
+const entranceGeo = entranceIP && entranceIP === outboundIP ? outboundGeo : entranceResult.geo;
 
 const riskResults = [pureData, proxyData, scamData].filter(
 item => item && normalizeIP(item.ip) === normalizeIP(outboundIP)
