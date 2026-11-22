@@ -9,7 +9,8 @@
 * 3. IP 类型引入 ip-api 的 mobile / proxy / hosting 强标志加权投票，
 * 再由 CleanIP + IPPure + ProxyCheck 交叉辅助判断
 * 4. 归属地：接入经真实 IP 实测挑选的来源阵容（ip-api + IPPure + ipquery +
-* ipapi.is + db-ip + geojs 为主，ipinfo 降为弱参考），加权投票定国家，
+* ipapi.is + db-ip + geojs 为主；ipinfo 已弃用——纯按号段注册地判定，
+* 把台湾出口误判成香港，是所有源里唯一唱反调的），加权投票定国家，
 * 地名只从国家一致的来源记录里取（不再跨源拼凑）：
 * - 中国：直辖市只显示直辖市；其他显示 省份 + 城市
 * - 香港 / 澳门 / 台湾：国家/地区名 + 下辖地区（泛称如 臺灣省 自动忽略）
@@ -44,7 +45,6 @@ proxyCheck: "https://proxycheck.io/v2/",
 scamalytics: "https://scamalytics.com/ip/",
 
 geoAPI: "http://ip-api.com/json/",
-ipInfo: "https://ipinfo.io/",
 ipQuery: "https://api.ipquery.io/",
 ipapiIs: "https://api.ipapi.is/?ip=",
 dbip: "https://api.db-ip.com/v2/free/",
@@ -657,7 +657,7 @@ function getMunicipality(value) {
 return MUNICIPALITIES[cleanAreaName(value).toLowerCase()] || "";
 }
 
-// 中国省份英文名 -> 中文名（ipinfo 等英文源兜底用）
+// 中国省份英文名 -> 中文名（英文源兜底用）
 const CN_PROVINCE_EN = {
 anhui: "安徽", fujian: "福建", gansu: "甘肃", guangdong: "广东", guizhou: "贵州",
 hainan: "海南", hebei: "河北", heilongjiang: "黑龙江", henan: "河南", hubei: "湖北",
@@ -751,8 +751,8 @@ return name;
 // =====================================
 // 16. 多源归属地交叉验证
 // 来源阵容（均经真实 IP 实测挑选）：ip-api（中文名+类型标志）、IPPure（探测响应）、
-// ipquery、ipapi.is、db-ip、geojs（实测型，对中转/广播 IP 更准）、ipinfo（弱参考）、
-// CleanIP / ip.sb / CF（已抓数据兜底）。
+// ipquery、ipapi.is、db-ip、geojs（实测型，对中转/广播 IP 更准）、
+// CleanIP / ip.sb / CF（已抓数据兜底）。ipinfo 已弃用（注册地误判，见下）。
 // 每个来源先整理成一条独立记录 {code, country, region, city, isp}；
 // 国家代码投票定下国家后，地名只从“国家一致”的记录里按优先级取，
 // 不再跨来源拼凑（杜绝 香港 + 臺灣省 这类混合结果）；显示时统一去重
@@ -760,9 +760,9 @@ return name;
 // =====================================
 
 // 加权投票：IPPure 是实测出口的服务、权重最高（3）；ip-api / ipquery / ipapi.is（2）；
-// db-ip / geojs / ipinfo / CF 权重 1；CleanIP / ip.sb 只提供字段兜底、不参与国家
+// db-ip / geojs / CF 权重 1；CleanIP / ip.sb 只提供字段兜底、不参与国家
 // 投票（权重 0）——按号段注册地判定的库会把中转节点的落地 IP 误判到注册国
-// （如 Kirino 的台湾出口被 ipinfo 判香港），实测类来源必须能压过它们。
+// （如 Kirino 的台湾出口被判香港），实测类来源必须能压过它们。
 // 同分时由支持方里的最高权重决定。
 function voteCountryCode(records) {
 const tally = {};
@@ -824,8 +824,9 @@ return toSimplified(s);
 }
 
 // 各来源整理成统一记录；prio 越小优先级越高：
-// ip-api（中文名）> 已抓兜底（IPPure 等）> ipquery > ipapi.is > db-ip > geojs > ipinfo
-function buildGeoRecords(a, b, extras, fallbacks) {
+// ip-api（中文名）> 已抓兜底（IPPure 等）> ipquery > ipapi.is > db-ip > geojs
+// （ipinfo 已弃用：纯按号段注册地判定，把台湾出口误判香港，是唯一唱反调的源）
+function buildGeoRecords(a, extras, fallbacks) {
 const records = [];
 if (a?.status === "success") {
 records.push({
@@ -852,17 +853,6 @@ weight: typeof f.w === "number"? f.w: 1
 }
 for (const r of extras || []) {
 if (r) records.push(r);
-}
-if (b) {
-records.push({
-code: String(b.country || "").toUpperCase(),
-country: "",
-region: b.region || "",
-city: b.city || "",
-isp: b.org? String(b.org).replace(/^AS\d+\s*/i, ""): "",
-prio: 6,
-weight: 1
-});
 }
 return records;
 }
@@ -902,13 +892,12 @@ async function getGeo(ip, fallbackGeos) {
 if (!ip) return null;
 const fallbacks = (fallbackGeos || []).filter(Boolean);
 
-const [a, b, ipq, iis, dbi, gjs] = await Promise.all([
+const [a, ipq, iis, dbi, gjs] = await Promise.all([
 getJSON(
 CFG.geoAPI +
 encodeURIComponent(ip) +
 "?lang=zh-CN&fields=status,country,countryCode,city,regionName,isp,org,as,asname,mobile,proxy,hosting"
 ),
-getJSON(CFG.ipInfo + encodeURIComponent(ip) + "/json"),
 getJSON(CFG.ipQuery + encodeURIComponent(ip)),
 getJSON(CFG.ipapiIs + encodeURIComponent(ip)),
 getJSON(CFG.dbip + encodeURIComponent(ip)),
@@ -965,7 +954,7 @@ weight: 1
 ];
 
 const apiOK = a?.status === "success";
-const records = buildGeoRecords(apiOK? a: null, b, extras, fallbacks);
+const records = buildGeoRecords(apiOK? a: null, extras, fallbacks);
 if (!records.length) return null;
 
 // 国家：用代码加权投票，避免中英文字符串对不上
@@ -1126,7 +1115,7 @@ Array.isArray(result?.requests) ? result.requests : []
 }
 
 const DETECTOR_PATTERN =
-/(my\.ippure\.com|1\.1\.1\.1|api-ipv4\.ip\.sb|api\.cleanip\.io|ip-api\.com|ipinfo\.io|scamalytics\.com|proxycheck\.io)/i;
+/(my\.ippure\.com|1\.1\.1\.1|api-ipv4\.ip\.sb|api\.cleanip\.io|ip-api\.com|scamalytics\.com|proxycheck\.io)/i;
 
 // 出口探测请求（真正产生落地 IP 的那四个）：节点名候选优先只认它们，
 // 保证显示的节点与落地 IP 出自同一批请求、同一个出口
@@ -1236,12 +1225,10 @@ dbg("主字段：" + (f0.primary.join(" | ") || "（无）"));
 dbg("深挖：" + (f0.extra.join(" | ") || "（无）"));
 }
 const found = extractPolicyCandidates(item);
-// 主字段权重 ×10：请求记录里只要 Surge 标注了实际策略，就不许链路里的其他名字压过它
+// 节点候选只认 Surge 标注的主字段（权重 ×10）：深挖字段来自嵌套决策链，
+// 混着其他策略组的值（如 TW8 404 就是这样混进来的），不再计票
 for (const name of found.primary) {
 target.set(name, (target.get(name) || 0) + weight * 10);
-}
-for (const name of found.extra) {
-target.set(name, (target.get(name) || 0) + weight);
 }
 if (!isProxy) continue;
 const ip = cleanRemoteIP(remote);
@@ -1269,28 +1256,10 @@ if (typeof obj[f] === "string" && obj[f]) return obj[f];
 return null;
 }
 
-// 官方接口 $surge.selectGroupDetails()：decisions 给出 select 组当前选中的策略，
-// groups 给出每个组的成员名单——后者用来校验前者：decisions 里的值若根本不是
-// 该组成员（实测出现过同名组串扰，把别的订阅的节点报成智能组的选择），直接拒绝。
-function getSelectGroupDetails() {
-try {
-if (typeof $surge !== "undefined" && $surge && typeof $surge.selectGroupDetails === "function") {
-const details = $surge.selectGroupDetails();
-if (details && typeof details === "object") {
-const decisions = details.decisions && typeof details.decisions === "object"? details.decisions: {};
-const groups = details.groups && typeof details.groups === "object"? details.groups: {};
-dbg("decisions：共 " + Object.keys(decisions).length + " 组");
-return { decisions, groups };
-}
-dbg("decisions：返回为空");
-return null;
-}
-dbg("decisions：接口不可用");
-} catch (e) {
-dbg("decisions：调用异常");
-}
-return null;
-}
+// 注意：$surge.selectGroupDetails() 已整体弃用——实测它在用户设备上返回的
+// decisions 混入了当前配置之外的组与选择（54 组 vs 本地接口 16 组），
+// 凭空给出根本不存在的节点名（如 TW8 404）。组解析只用本地 HTTP API
+// （/v1/policy_groups 系列），那才是当前配置的真实状态。
 
 // 从 /v1/policy_groups 提取每个组的成员名单（policies / availablePolicyNames 等数组字段）
 function buildGroupMembersMap(data) {
@@ -1383,29 +1352,20 @@ if (!name) return "";
 if (name === "DIRECT") return "DIRECT（直连）";
 if (name === "REJECT" || name === "REJECT-DROP") return name;
 let current = name;
-const details = getSelectGroupDetails();
-const decisions = details?.decisions || null;
-const sgGroups = details?.groups || {};
 const pgData = await httpAPIGet("/v1/policy_groups");
 const groupMap = buildGroupSelectedMap(pgData);
 const pgMembers = buildGroupMembersMap(pgData);
 let testResults = null;
 let testResultsLoaded = false;
 
-// 成员校验：任何来源给出的解析结果，必须是该组的真实成员才采信——
-// 实测同名组串扰会让 decisions 把别的订阅的节点报成智能组的选择，
-// 那种值根本不在本组成员名单里，一验即穿。成员名单以本地
-// /v1/policy_groups 为准，其次 selectGroupDetails 的 groups；
-// 两处都查不到成员名单时不拦（保持原有行为）。
+// 成员校验：任何来源给出的解析结果，必须是该组的真实成员才采信。
+// 成员名单只取本地 /v1/policy_groups；查不到成员名单时不拦。
 const memberOK = (group, candidate) => {
-let list = null;
-if (Array.isArray(pgMembers[group]) && pgMembers[group].length) list = pgMembers[group];
-else if (Array.isArray(sgGroups[group]) && sgGroups[group].length) list = sgGroups[group];
+const list = Array.isArray(pgMembers[group]) && pgMembers[group].length ? pgMembers[group] : null;
 if (!list) return true;
 return list.includes(candidate);
 };
-const topMembers = Array.isArray(pgMembers[name]) && pgMembers[name].length ? pgMembers[name]
-: (Array.isArray(sgGroups[name]) && sgGroups[name].length ? sgGroups[name] : null);
+const topMembers = Array.isArray(pgMembers[name]) && pgMembers[name].length ? pgMembers[name] : null;
 if (topMembers) dbg("成员[" + name + "]：" + topMembers.join(" | "));
 
 for (let i = 0; i < 5; i++) {
@@ -1422,20 +1382,16 @@ return null;
 via = source;
 return value;
 };
-// 1) select 组：官方 decisions 映射（经成员校验后才采信）
-if (decisions && typeof decisions[current] === "string" && decisions[current]) {
-next = gate(decisions[current], "decisions");
-}
-// 2) /v1/policy_groups 全量数据深度解析
-if (!next) next = gate(groupMap[current], "policy_groups");
-// 3) 按组名单查 select 接口：GET /v1/policy_groups/select?group_name=xxx -> {"policy": "..."}
+// 1) /v1/policy_groups 全量数据深度解析
+next = gate(groupMap[current], "policy_groups");
+// 2) 按组名单查 select 接口：GET /v1/policy_groups/select?group_name=xxx -> {"policy": "..."}
 if (!next) {
 const sel = await httpAPIGet("/v1/policy_groups/select", { group_name: current });
 const v = sel ? firstStringField(sel, ["policy", "selected", "now"]) : null;
 next = gate(v, "select接口");
 if (!next && !v) dbg("select接口：" + current + " 无结果");
 }
-// 4) 自动组 / 智能组：test_results 里的当前生效策略
+// 3) 自动组 / 智能组：test_results 里的当前生效策略
 if (!next) {
 if (!testResultsLoaded) {
 testResults = await httpAPIGet("/v1/policy_groups/test_results");
@@ -1475,14 +1431,29 @@ dbg("节点结果：" + (v || "（空）"));
 return v;
 };
 const hasLists = proxies.size > 0 || groups.size > 0;
+const isNode = n => proxies.has(n) && !groups.has(n);
+// 严格按票数顺序裁决：票数最高的候选就是 Surge 标注的实际策略。它是组，
+// 就先解析这个组、显示解析出的成员——绝不能让票数更低的游离节点名抢先。
+// 请求记录深挖会挖到其他策略组的决策值（如 TW8 404），它在全局节点名单
+// 里真实存在，旧逻辑“是节点就直接用”会跳过高票数组直接返回它，
+// 这正是 TW8 404 一再冒充节点名的通道。
+const resolveCache = {};
+const resolveOnce = async n => {
+if (!(n in resolveCache)) resolveCache[n] = translate(await resolveNodeName(n));
+return resolveCache[n];
+};
 for (const c of candidates) {
-if (proxies.has(c.name) && !groups.has(c.name)) return done(c.name);
+if (isNode(c.name)) return done(c.name);
+if (groups.has(c.name)) {
+const r = await resolveOnce(c.name);
+if (r && r !== c.name && !groups.has(r)) return done(r);
+}
 }
 const resolvedList = [];
 for (const c of candidates) {
-const r = translate(await resolveNodeName(c.name));
+const r = await resolveOnce(c.name);
 if (r && !resolvedList.includes(r)) resolvedList.push(r);
-if (r && proxies.has(r) && !groups.has(r)) return done(r);
+if (r && isNode(r)) return done(r);
 }
 if (hasLists) {
 const nonGroup = resolvedList.find(r => !groups.has(r));
@@ -1560,8 +1531,8 @@ const map = new Map();
 for (const item of taggedRecords) {
 const found = extractPolicyCandidates(item);
 const w = /\(Proxy\)/i.test(item?.remoteAddress || "") ? 2 : 1;
+// 只认 Surge 标注的主字段：深挖字段来自嵌套决策链，混着其他组的值，不计票
 for (const n of found.primary) map.set(n, (map.get(n) || 0) + w * 10);
-for (const n of found.extra) map.set(n, (map.get(n) || 0) + w);
 }
 const candidates = Array.from(map.entries())
 .map(([name, votes]) => ({ name, votes }))
