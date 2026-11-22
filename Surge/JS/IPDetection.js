@@ -537,7 +537,7 @@ else if (score <= 80) level = "较高风险";
 else level = "高风险";
 
 return {
-text: `${score.toFixed(0)} / 100 · ${level}（${source}）` + (divergent? " · 评分分歧": ""),
+text: `${score.toFixed(0)} / 100 · ${level}`,
 score: score,
 source: source,
 divergent: divergent
@@ -595,11 +595,6 @@ const pureBroadcast = pureData && typeof pureData.broadcast === "boolean"? pureD
 const cleanBroadcast = cleanData && typeof cleanData.broadcast === "boolean"? cleanData.broadcast: null;
 if (pureBroadcast!== null) attribute = pureBroadcast? "广播 IP": "原生 IP";
 else if (cleanBroadcast!== null) attribute = cleanBroadcast? "广播 IP": "原生 IP";
-
-// 代理属性单独提示（ip-api / ProxyCheck 任一确认即标注，附加在类型后）
-if (flags.proxy === true || proxyData?.proxy === true || proxyData?.vpn === true) {
-attribute += " · 代理/VPN";
-}
 
 return { type: type, attribute: attribute};
 }
@@ -937,15 +932,13 @@ return result;
 // 18. 面板信息块
 // =====================================
 
-function buildIPBlock(name, ip, geo, note) {
-const lines = [
-``,
+function buildIPBlock(name, ip, geo) {
+return [
+`【${name}】`,
 `IP：${ip || "获取失败"}`,
 `地区：${formatLocation(geo)}`,
 `运营商：${geo?.isp || "未知"}`
-];
-if (note) lines.push(note);
-return lines.join("\n");
+].join("\n");
 }
 
 // =====================================
@@ -991,7 +984,6 @@ const [cleanData, proxyData, scamData, outboundGeo] = await Promise.all([
 getCleanIP(outboundIP, sources.sources.cleanRaw),
 getProxyCheck(outboundIP),
 // IPPure 已有评分时 Scamalytics 只是优先级最低的兜底，跳过以省时并减少被限流概率；
-// 但评分分歧检测需要它时可把下面改为始终请求
 pureData && pureData.score!== null? Promise.resolve(null): getScamalytics(outboundIP),
 getGeo(outboundIP, outboundFallbacks)
 ]);
@@ -1014,29 +1006,20 @@ item => item && normalizeIP(item.ip) === normalizeIP(outboundIP)
 const risk = calculateRisk(riskResults);
 const type = getIPType(pureData, proxyData, cleanData, outboundGeo?.flags);
 
-const consensusText =
-sources.consensus === "unanimous"
-? `${sources.topCount}/${sources.count} 源一致`
-: sources.consensus === "majority"
-? `${sources.topCount}/${sources.count} 源一致`
-: "来源分歧";
-
 const content = [
-"",
+"【IP 信息】",
 `类型：${type.type}`,
 `属性：${type.attribute}`,
 `纯净度：${risk.text}`,
-`出口一致：${consensusText}`,
 "",
-buildIPBlock("入口 IP", entranceIP, entranceGeo, entrance.distinct > 1? `注：检测到 ${entrance.distinct} 个入口，以上为主要入口`: ""),
+buildIPBlock("入口 IP", entranceIP, entranceGeo),
 "",
 buildIPBlock("落地 IP", outboundIP, outboundGeo)
 ].join("\n");
 
-const hasWarning =
-sources.consensus === "split" || risk.score === null || risk.divergent || entrance.distinct > 1;
+const isError = sources.conflict || risk.score === null;
 
-finish(content, hasWarning? "warn": "ok");
+finish(content, isError);
 } catch (e) {
 finish("检测异常：" + String(e), "error");
 }
