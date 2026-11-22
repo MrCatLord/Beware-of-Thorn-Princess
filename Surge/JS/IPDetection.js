@@ -889,14 +889,14 @@ if (!normalized || isPrivateOrLoopbackIP(normalized)) return null;
 return normalized;
 }
 
-function httpAPIGet(path) {
+function httpAPIGet(path, body) {
 return new Promise(resolve => {
 if (typeof $httpAPI !== "function") {
 resolve(null);
 return;
 }
 try {
-$httpAPI("GET", path, null, result => {
+$httpAPI("GET", path, body || null, result => {
 resolve(result || null);
 });
 } catch (e) {
@@ -973,23 +973,90 @@ return { ip: groups[0][0], distinct: groups.length, votes: groups[0][1], policyN
 }
 
 
-function lookupGroupSelected(groupsData, name) {
-if (!groupsData || !name) return null;
-if (Array.isArray(groupsData)) {
-const item = groupsData.find(g => g && (g.name === name || g.group === name));
-if (!item) return null;
-const v = item.selected || item.policy || item.now || item.selectedPolicy || null;
-return typeof v === "string" ? v : null;
-}
-if (typeof groupsData === "object") {
-const v = groupsData[name];
-if (typeof v === "string") return v;
-if (v && typeof v === "object") {
-const inner = v.selected || v.policy || v.now || v.selectedPolicy || null;
-return typeof inner === "string" ? inner : null;
-}
+const SELECTED_FIELDS = ["selected", "selectedPolicy", "selected_policy", "now", "current", "currentPolicy", "policy", "value", "choice"];
+
+function firstStringField(obj, fields) {
+if (!obj || typeof obj !== "object") return null;
+for (const f of fields) {
+if (typeof obj[f] === "string" && obj[f]) return obj[f];
 }
 return null;
+}
+
+// 官方接口 $surge.selectGroupDetails()：decisions 里直接给出每个 select 策略组当前选中的策略
+function getSelectGroupDecisions() {
+try {
+if (typeof $surge !== "undefined" && $surge && typeof $surge.selectGroupDetails === "function") {
+const details = $surge.selectGroupDetails();
+if (details && details.decisions && typeof details.decisions === "object") return details.decisions;
+}
+} catch (e) {}
+return null;
+}
+
+// 深度遍历 /v1/policy_groups 的返回：不管外层包装键名是什么（policy-groups 等），
+// 把所有带 name/group 的条目按其选中字段收成 name -> 选中策略 的映射；
+// 同时兼容 {组名: "策略"} / {组名: {selected: ...}} 的对象映射形式
+function buildGroupSelectedMap(data) {
+const map = {};
+const visit = (node, keyHint) => {
+if (!node || typeof node !== "object") return;
+if (Array.isArray(node)) {
+node.forEach(item => visit(item, keyHint));
+return;
+}
+const name = typeof node.name === "string" && node.name ? node.name : (typeof node.group === "string" && node.group ? node.group : "");
+const selected = firstStringField(node, SELECTED_FIELDS);
+if (name && selected && !map[name]) map[name] = selected;
+if (!name && keyHint && selected && !map[keyHint]) map[keyHint] = selected;
+for (const key of Object.keys(node)) {
+const v = node[key];
+if (typeof v === "string") {
+if (!name && v && !SELECTED_FIELDS.includes(key) && !["type", "name", "group"].includes(key) && !map[key]) map[key] = v;
+} else {
+visit(v, key);
+}
+}
+};
+visit(data, "");
+return map;
+}
+
+// url-test / fallback / load-balance 等自动组没有手动选中项，从 test_results 里取当前生效策略
+function extractAutoGroupPolicy(data, groupName) {
+let found = null;
+const visit = node => {
+if (found || !node || typeof node !== "object") return;
+if (Array.isArray(node)) {
+for (const item of node) {
+visit(item);
+if (found) return;
+}
+return;
+}
+const name = typeof node.name === "string" ? node.name : (typeof node.group === "string" ? node.group : "");
+if (name === groupName) {
+found = firstStringField(node, SELECTED_FIELDS);
+if (!found && Array.isArray(node.availablePolicyNames) && node.availablePolicyNames.length) {
+found = String(node.availablePolicyNames[0] || "") || null;
+}
+if (found) return;
+}
+if (Object.prototype.hasOwnProperty.call(node, groupName)) {
+const v = node[groupName];
+if (typeof v === "string" && v) {
+found = v;
+return;
+}
+if (v && typeof v === "object") {
+found = firstStringField(v, SELECTED_FIELDS);
+if (found) return;
+}
+}
+for (const key of Object.keys(node)) visit(node[key]);
+};
+visit(data);
+return found;
 }
 
 async function resolveNodeName(policyName) {
@@ -998,9 +1065,34 @@ if (!name) return "";
 if (name === "DIRECT") return "DIRECT（直连）";
 if (name === "REJECT" || name === "REJECT-DROP") return name;
 let current = name;
-const groups = await httpAPIGet("/v1/policy_groups");
-for (let i = 0; i < 3; i++) {
-const next = lookupGroupSelected(groups, current);
+const decisions = getSelectGroupDecisions();
+let groupMap = null;
+let testResults = null;
+let testResultsLoaded = false;
+for (let i = 0; i < 5; i++) {
+if (current === "DIRECT") return "DIRECT（直连）";
+if (current === "REJECT" || current === "REJECT-DROP") return current;
+let next = null;
+// 1) select 组：官方 decisions 映射最可靠
+if (decisions && typeof decisions[current] === "string" && decisions[current]) next = decisions[current];
+// 2) /v1/policy_groups 全量数据深度解析
+if (!next) {
+if (groupMap === null) groupMap = buildGroupSelectedMap(await httpAPIGet("/v1/policy_groups"));
+if (groupMap[current]) next = groupMap[current];
+}
+// 3) 按组名单查 select 接口：GET /v1/policy_groups/select?group_name=xxx -> {"policy": "..."}
+if (!next) {
+const sel = await httpAPIGet("/v1/policy_groups/select", { group_name: current });
+if (sel) next = firstStringField(sel, ["policy", "selected", "now"]);
+}
+// 4) 自动组：test_results 里的当前生效策略
+if (!next) {
+if (!testResultsLoaded) {
+testResults = await httpAPIGet("/v1/policy_groups/test_results");
+testResultsLoaded = true;
+}
+next = extractAutoGroupPolicy(testResults, current);
+}
 if (!next || next === current) break;
 current = next;
 }
@@ -1020,11 +1112,14 @@ return result;
 // =====================================
 
 
+// 对齐说明：全角冒号占 1 个汉字宽，英文冒号只占约 1/4 宽。
+// 纯净度 / 运营商 按用户指定用英文冒号，冒号后补 3 个空格，
+// 使所有行的值都从同一位置开始（按实测截图：值起点差 36px ≈ 3 个空格宽）。
 function buildIPBlock(name, ip, geo) {
 return [
 `${name} ：${ip || "获取失败"}`,
 `IP地区 ：${formatLocation(geo)}`,
-`运营商 ：${geo?.isp || "未知"}`
+`运营商 :   ${geo?.isp || "未知"}`
 ].join("\n");
 }
 
@@ -1093,11 +1188,11 @@ const risk = calculateRisk(riskResults);
 const type = getIPType(pureData, proxyData, cleanData, outboundGeo?.flags);
 
 const content = [
-" ".repeat(12) + (entranceResult.nodeName || "未知"),
+entranceResult.nodeName || "未知",
 "",
 `IP类型 ：${type.type}`,
 `IP属性 ：${type.attribute}`,
-`纯净度 ：${risk.text}`,
+`纯净度 :   ${risk.text}`,
 "",
 buildIPBlock("入口IP", entranceIP, entranceGeo),
 "",
