@@ -1,12 +1,11 @@
-
-
 /**
  * Surge iOS 6 - IP Detection
  * IP 类型 / 纯净度 / 入口 IP / 落地 IP
  *
- * 1. Cloudflare / IP.SB / IPPure 多源出口 IP 检测
- * 2. 多源一致性验证，异常分歧识别
- * 3. CleanIP / IPPure / ProxyCheck / Scamalytics 纯净度与类型/属性融合
+ * 1. 多源出口 IP 探测与一致性交叉验证
+ * 2. IPPure > ProxyCheck > Scamalytics 纯净度优先级
+ * 3. CleanIP + IPPure + ProxyCheck 交叉辅助判断类型与属性
+ * 4. ip-api + ipinfo + CleanIP 多源归属地互补验证
  */
 
 // =====================================
@@ -289,59 +288,119 @@ function parseTrace(body) {
 }
 
 // =====================================
-// 7. 出口 IP 多源检测
+// 7. 多源出口 IP 检测与一致性交叉验证
 // =====================================
 
+function buildCleanIPHeaders() {
+  const headers = {};
+  if (CLEANIP_KEY) {
+    headers["X-API-Key"] = CLEANIP_KEY;
+  }
+  return headers;
+}
+
+function extractCleanIPAddress(raw) {
+  if (!raw || raw.ok === false) return null;
+  const payload = raw.data || raw;
+  return normalizeIP(payload?.ip || payload?.query);
+}
+
+/**
+ * 评估候选 IP 的可信权重：
+ * - 票数越多权重越高（强一致优先）
+ * - 无多数分歧时，优先选择同时提供结构化属性/归属地的源（IPPure > CF > IP.SB > CleanIP）
+ */
+function verifyOutboundConsistency(entries) {
+  const validEntries = entries.filter(e => e && e.ip);
+
+  if (!validEntries.length) {
+    return {
+      ip: null,
+      conflict: false,
+      consensus: "none",
+      count: 0,
+      votes: {}
+    };
+  }
+
+  const voteMap = {};
+  const sourceRank = {
+    pure: 4,
+    cf: 3,
+    sb: 2,
+    clean: 1
+  };
+
+  for (const item of validEntries) {
+    if (!voteMap[item.ip]) {
+      voteMap[item.ip] = {
+        ip: item.ip,
+        count: 0,
+        sources: [],
+        bestRank: 0
+      };
+    }
+    voteMap[item.ip].count += 1;
+    voteMap[item.ip].sources.push(item.key);
+    const rank = sourceRank[item.key] || 0;
+    if (rank > voteMap[item.ip].bestRank) {
+      voteMap[item.ip].bestRank = rank;
+    }
+  }
+
+  const groups = Object.values(voteMap).sort((a, b) => {
+    if (b.count !== a.count) return b.count - a.count;
+    return b.bestRank - a.bestRank;
+  });
+
+  const top = groups[0];
+  const uniqueIPCount = groups.length;
+  const hasMajority = top.count >= 2;
+  const isUnanimous = uniqueIPCount === 1 && validEntries.length >= 2;
+
+  return {
+    ip: top.ip,
+    conflict: uniqueIPCount > 1,
+    consensus: isUnanimous ? "unanimous" : hasMajority ? "majority" : "split",
+    count: validEntries.length,
+    votes: voteMap
+  };
+}
+
 async function getOutboundSources() {
-  const [pure, traceBody, sb] = await Promise.all([
+  const [pure, traceBody, sb, cleanRaw] = await Promise.all([
     getJSON(CFG.ippure),
     request(CFG.cfTrace),
-    getJSON(CFG.ipSB)
+    getJSON(CFG.ipSB),
+    getJSON(CFG.cleanIP + "?lang=zh", buildCleanIPHeaders())
   ]);
 
   const results = {
     cf: parseTrace(traceBody),
     sb: normalizeIP(sb?.ip),
     pure: normalizeIP(pure?.ip),
-    pureData: pure
+    clean: extractCleanIPAddress(cleanRaw),
+    pureData: pure,
+    cleanRaw: cleanRaw
   };
 
-  const candidates = [results.cf, results.sb, results.pure].filter(Boolean);
+  // 核心三源参与主投票验证；若三源均无返回，再以 CleanIP 探测结果兜底
+  const coreEntries = [
+    { key: "cf", ip: results.cf },
+    { key: "sb", ip: results.sb },
+    { key: "pure", ip: results.pure }
+  ].filter(item => item.ip);
 
-  if (!candidates.length) {
-    return {
-      ip: null,
-      conflict: false,
-      count: 0,
-      sources: results
-    };
-  }
-
-  const counts = {};
-
-  candidates.forEach(ip => {
-    counts[ip] = (counts[ip] || 0) + 1;
-  });
-
-  let selected = null;
-  let maxCount = 0;
-
-  Object.keys(counts).forEach(ip => {
-    if (counts[ip] > maxCount) {
-      maxCount = counts[ip];
-      selected = ip;
-    }
-  });
-
-  // 多数一致优先；无多数时按 CF > IP.SB > IPPure
-  if (maxCount < 2) {
-    selected = results.cf || results.sb || results.pure;
-  }
+  const verification = coreEntries.length
+    ? verifyOutboundConsistency(coreEntries)
+    : verifyOutboundConsistency([{ key: "clean", ip: results.clean }]);
 
   return {
-    ip: selected,
-    conflict: Object.keys(counts).length > 1,
-    count: candidates.length,
+    ip: verification.ip,
+    conflict: verification.conflict,
+    consensus: verification.consensus,
+    count: verification.count,
+    votes: verification.votes,
     sources: results
   };
 }
@@ -414,42 +473,16 @@ function mapIPCategory(rawType) {
 }
 
 // =====================================
-// 9. CleanIP (https://api.cleanip.io)
+// 9. CleanIP（仅用于落地辅助、类型/属性与归属地兜底，不参与纯净度评分）
 // =====================================
 
-async function getCleanIP(ip) {
-  const headers = {};
-  if (CLEANIP_KEY) {
-    headers["X-API-Key"] = CLEANIP_KEY;
-  }
+function parseCleanIPPayload(raw, targetIP) {
+  if (!raw || raw.ok === false) return null;
 
-  const url =
-    CFG.cleanIP +
-    encodeURIComponent(ip) +
-    "?lang=zh&detail=full";
-
-  const data = await getJSON(url, headers);
-
-  if (!data || data.ok === false) {
+  const payload = raw.data || raw;
+  const resolvedIP = normalizeIP(payload?.ip || payload?.query || targetIP);
+  if (!resolvedIP || (targetIP && resolvedIP !== normalizeIP(targetIP))) {
     return null;
-  }
-
-  const payload = data.data || data;
-
-  // CleanIP 评分通常为 0-100（越高越纯净）；若字段名为 fraudScore/riskScore 则按风险分处理
-  let riskScore = null;
-
-  if (payload.fraudScore !== undefined || payload.riskScore !== undefined) {
-    riskScore = validScore(payload.fraudScore ?? payload.riskScore);
-  } else {
-    const purity = validScore(
-      payload.score ??
-        payload.purityScore ??
-        payload.purity?.score
-    );
-    if (purity !== null) {
-      riskScore = Math.max(0, Math.min(100, 100 - purity));
-    }
   }
 
   const rawType =
@@ -471,7 +504,6 @@ async function getCleanIP(ip) {
   const isBroadcast = parseBooleanFlag(
     payload.isBroadcast ??
       payload.broadcast ??
-      payload.isNative === false ??
       payload.network?.isBroadcast
   );
 
@@ -480,8 +512,7 @@ async function getCleanIP(ip) {
 
   return {
     source: "CleanIP",
-    ip: normalizeIP(payload.ip || ip),
-    score: riskScore,
+    ip: resolvedIP,
     type: mapped.category,
     residential: isResidential,
     broadcast: isBroadcast,
@@ -501,6 +532,19 @@ async function getCleanIP(ip) {
         ""
     }
   };
+}
+
+async function getCleanIP(ip, cachedRaw) {
+  const cached = parseCleanIPPayload(cachedRaw, ip);
+  if (cached) return cached;
+
+  const url =
+    CFG.cleanIP +
+    encodeURIComponent(ip) +
+    "?lang=zh&detail=full";
+
+  const data = await getJSON(url, buildCleanIPHeaders());
+  return parseCleanIPPayload(data, ip);
 }
 
 // =====================================
@@ -582,11 +626,11 @@ async function getScamalytics(ip) {
 }
 
 // =====================================
-// 13. 纯净度计算（CleanIP > IPPure > ProxyCheck > Scamalytics）
+// 13. 纯净度计算（严格维持 IPPure > ProxyCheck > Scamalytics）
 // =====================================
 
 function calculateRisk(results) {
-  const priority = ["CleanIP", "IPPure", "ProxyCheck", "Scamalytics"];
+  const priority = ["IPPure", "ProxyCheck", "Scamalytics"];
 
   for (const source of priority) {
     const item = results.find(
@@ -631,41 +675,68 @@ function calculateRisk(results) {
 }
 
 // =====================================
-// 14. IP 类型与原生 / 广播属性
+// 14. 多源交叉验证：IP 类型与原生 / 广播属性
 // =====================================
 
-function getIPType(cleanData, pureData, proxyData) {
+function getIPType(pureData, proxyData, cleanData) {
+  const sources = [cleanData, pureData, proxyData].filter(Boolean);
+
+  // 统计各来源对“是否住宅/移动类”的投票
+  const resFlags = sources
+    .map(s => (typeof s.residential === "boolean" ? s.residential : null))
+    .filter(v => v !== null);
+
+  const trueVotes = resFlags.filter(v => v === true).length;
+  const falseVotes = resFlags.filter(v => v === false).length;
+
   let type = "未知";
 
-  const candidates = [cleanData, pureData, proxyData].filter(Boolean);
-
-  for (const item of candidates) {
-    if (typeof item.residential === "boolean") {
-      if (item.residential) {
-        type = item.type && item.type !== "未知" ? item.type : "住宅 IP";
-        break;
-      } else if (item.type && item.type !== "未知") {
-        type = item.type;
-        break;
-      } else {
-        type = "非住宅 IP";
-        break;
-      }
+  if (trueVotes > falseVotes) {
+    // 多数或单一来源判定为住宅/移动：优先保留细分类型（如 移动/无线 IP / 住宅 IP）
+    const detailedRes = [cleanData, proxyData].find(
+      s => s && s.residential === true && s.type && s.type !== "未知"
+    );
+    type = detailedRes ? detailedRes.type : "住宅 IP";
+  } else if (falseVotes > trueVotes) {
+    // 多数或单一来源判定为非住宅：优先细分类型（机房 IP / 商业 IP）
+    const detailedNonRes = [cleanData, proxyData].find(
+      s => s && s.residential === false && s.type && s.type !== "未知"
+    );
+    type = detailedNonRes ? detailedNonRes.type : "非住宅 IP";
+  } else if (resFlags.length > 0) {
+    // 票数平局（如 1 票住宅 vs 1 票非住宅）：优先参考 IPPure，再看 CleanIP/ProxyCheck
+    if (pureData && typeof pureData.residential === "boolean") {
+      type = pureData.residential
+        ? cleanData && cleanData.residential === true && cleanData.type !== "未知"
+          ? cleanData.type
+          : "住宅 IP"
+        : proxyData && proxyData.residential === false && proxyData.type !== "未知"
+          ? proxyData.type
+          : cleanData && cleanData.type && cleanData.type !== "未知"
+            ? cleanData.type
+            : "非住宅 IP";
     }
-    if (item.type && item.type !== "未知") {
-      type = item.type;
-      break;
+  } else {
+    // 无明确 boolean 标记时，回退具体类型标签
+    const fallbackType = [cleanData, proxyData].find(
+      s => s && s.type && s.type !== "未知"
+    );
+    if (fallbackType) {
+      type = fallbackType.type;
     }
   }
 
+  // 原生 / 广播属性多源交叉印证（IPPure 优先，CleanIP 印证/补全）
   let attribute = "无法确认";
+  const pureBroadcast =
+    pureData && typeof pureData.broadcast === "boolean" ? pureData.broadcast : null;
+  const cleanBroadcast =
+    cleanData && typeof cleanData.broadcast === "boolean" ? cleanData.broadcast : null;
 
-  const broadcastSource = [cleanData, pureData, proxyData].find(
-    item => item && typeof item.broadcast === "boolean"
-  );
-
-  if (broadcastSource) {
-    attribute = broadcastSource.broadcast ? "广播 IP" : "原生 IP";
+  if (pureBroadcast !== null) {
+    attribute = pureBroadcast ? "广播 IP" : "原生 IP";
+  } else if (cleanBroadcast !== null) {
+    attribute = cleanBroadcast ? "广播 IP" : "原生 IP";
   }
 
   return {
@@ -802,29 +873,39 @@ function normalizeSpecialArea(value, code) {
 }
 
 // =====================================
-// 16. 地区信息查询（ip-api + ipinfo + CleanIP 兜底）
+// 16. 多源归属地交叉验证（ip-api + ipinfo + CleanIP）
 // =====================================
 
+function pickMostFrequent(values) {
+  const cleanList = values.map(v => cleanAreaName(v)).filter(Boolean);
+  if (!cleanList.length) return "";
+
+  const counts = {};
+  for (const v of cleanList) {
+    const k = v.toLowerCase();
+    counts[k] = { value: v, count: (counts[k]?.count || 0) + 1 };
+  }
+
+  return Object.values(counts).sort((a, b) => b.count - a.count)[0].value;
+}
+
 function getISP(a, b, fallbackGeo) {
-  let isp = "";
+  const candidates = [];
 
-  if (a?.status === "success") {
-    isp = a.isp || "";
+  if (a?.status === "success" && a.isp) {
+    candidates.push(cleanAreaName(a.isp));
+  }
+  if (b?.org) {
+    candidates.push(cleanAreaName(b.org.replace(/^AS\d+\s*/i, "")));
+  }
+  if (a?.status === "success" && (a.org || a.asname)) {
+    candidates.push(cleanAreaName(a.org || a.asname));
+  }
+  if (fallbackGeo?.isp) {
+    candidates.push(cleanAreaName(fallbackGeo.isp.replace(/^AS\d+\s*/i, "")));
   }
 
-  if (!isp && b?.org) {
-    isp = b.org.replace(/^AS\d+\s*/i, "");
-  }
-
-  if (!isp && a?.status === "success") {
-    isp = a.org || a.asname || "";
-  }
-
-  if (!isp && fallbackGeo?.isp) {
-    isp = fallbackGeo.isp.replace(/^AS\d+\s*/i, "");
-  }
-
-  return isp || "未知";
+  return pickMostFrequent(candidates) || "未知";
 }
 
 async function getGeo(ip, fallbackGeo) {
@@ -843,28 +924,29 @@ async function getGeo(ip, fallbackGeo) {
 
   if (!geoOK && !b && !fallbackGeo) return null;
 
-  const countryCode = String(
-    (geoOK && a.countryCode) ||
-      b?.country ||
-      fallbackGeo?.countryCode ||
-      ""
-  ).toUpperCase();
+  const countryCode = pickMostFrequent([
+    geoOK ? String(a.countryCode || "").toUpperCase() : "",
+    b?.country ? String(b.country).toUpperCase() : "",
+    fallbackGeo?.countryCode ? String(fallbackGeo.countryCode).toUpperCase() : ""
+  ]);
 
-  let country =
-    (geoOK && a.country) ||
-    b?.country ||
-    fallbackGeo?.country ||
-    "";
+  let country = pickMostFrequent([
+    geoOK ? a.country : "",
+    b?.country || "",
+    fallbackGeo?.country || ""
+  ]);
 
-  const city =
-    cleanAreaName(geoOK ? a.city : "") ||
-    cleanAreaName(b?.city || "") ||
-    cleanAreaName(fallbackGeo?.city || "");
+  const city = pickMostFrequent([
+    geoOK ? a.city : "",
+    b?.city || "",
+    fallbackGeo?.city || ""
+  ]);
 
-  const region =
-    cleanAreaName(geoOK ? a.regionName : "") ||
-    cleanAreaName(b?.region || "") ||
-    cleanAreaName(fallbackGeo?.region || "");
+  const region = pickMostFrequent([
+    geoOK ? a.regionName : "",
+    b?.region || "",
+    fallbackGeo?.region || ""
+  ]);
 
   const countryNames = {
     CN: "中国",
@@ -1009,7 +1091,6 @@ async function getEntranceIP() {
   let ip = pickEntranceFromRequests(await queryRecentRequests());
   if (ip) return ip;
 
-  // 若首次查询时请求日志尚未落盘，短暂停顿后再查一次
   await new Promise(resolve => setTimeout(resolve, 250));
   ip = pickEntranceFromRequests(await queryRecentRequests());
   return ip || null;
@@ -1049,27 +1130,26 @@ totalTimer = setTimeout(() => {
     const pureData = getIPPureData(outboundIP, sources.sources.pureData);
 
     const [cleanData, proxyData, scamData, outboundGeo] = await Promise.all([
-      getCleanIP(outboundIP),
+      getCleanIP(outboundIP, sources.sources.cleanRaw),
       getProxyCheck(outboundIP),
       getScamalytics(outboundIP),
       getGeo(outboundIP, null)
     ]);
 
-    // 若 ip-api 与 ipinfo 均未命中，用 CleanIP 附带的归属地做补充
     const resolvedOutboundGeo =
       outboundGeo || (cleanData?.geo ? await getGeo(outboundIP, cleanData.geo) : null);
 
     const entranceIP = await getEntranceIP();
     const entranceGeo = entranceIP ? await getGeo(entranceIP, null) : null;
 
-    const riskResults = [cleanData, pureData, proxyData, scamData].filter(
+    // 纯净度评分严格仅由 IPPure / ProxyCheck / Scamalytics 提供，且必须匹配落地 IP
+    const riskResults = [pureData, proxyData, scamData].filter(
       item => item && normalizeIP(item.ip) === normalizeIP(outboundIP)
     );
 
     const risk = calculateRisk(riskResults);
-    const type = getIPType(cleanData, pureData, proxyData);
+    const type = getIPType(pureData, proxyData, cleanData);
 
-    // 面板保持你指定的简洁字段
     const content = [
       "【IP 信息】",
       `类型：${type.type}`,
