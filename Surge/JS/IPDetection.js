@@ -1188,11 +1188,12 @@ const risk = calculateRisk(riskResults);
 const type = getIPType(pureData, proxyData, cleanData, outboundGeo?.flags);
 
 const content = [
+"",
 entranceResult.nodeName || "未知",
 "",
 `IP类型：${type.type}`,
 `IP属性：${type.attribute}`,
-`纯净度： ${risk.text}`,
+`纯净度：${risk.text}`,
 "",
 buildIPBlock("入口IP", entranceIP, entranceGeo),
 "",
